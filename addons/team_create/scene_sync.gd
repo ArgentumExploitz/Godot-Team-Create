@@ -10,6 +10,7 @@ const SYNC_INTERVAL = 0.1 # Sync 10 times a second max
 
 # Tracking structure changes locally so we don't bounce events back and forth
 var _ignore_next_structure_event = false
+var _is_reloading_scene = false
 var _pre_removal_paths = {}
 var _pre_rename_paths = {}
 
@@ -25,13 +26,18 @@ func _ready():
 		if root:
 			root.child_entered_tree.connect(_on_any_child_entered_tree.bind(root))
 
-func _on_any_child_entered_tree(node: Node, parent: Node):
-	# Listen for predelete to get path before removal
+			# Also connect existing nodes
+			_connect_tree_exiting_recursive(root)
+
+func _connect_tree_exiting_recursive(node: Node):
 	if not node.tree_exiting.is_connected(_on_node_tree_exiting.bind(node)):
 		node.tree_exiting.connect(_on_node_tree_exiting.bind(node))
-
 	for child in node.get_children():
-		_on_any_child_entered_tree(child, node)
+		_connect_tree_exiting_recursive(child)
+
+func _on_any_child_entered_tree(node: Node, parent: Node):
+	# Listen for predelete to get path before removal
+	_connect_tree_exiting_recursive(node)
 
 func _on_node_tree_exiting(node: Node):
 	if multiplayer.has_multiplayer_peer() and not multiplayer.get_peers().is_empty():
@@ -205,7 +211,7 @@ func push_current_scene_to_peer(id: int):
 					rpc_id(id, "receive_scene", path, bytes)
 
 func _on_node_added(node: Node):
-	if _ignore_next_structure_event or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
+	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
 		return
 
 	# Delay execution slightly so properties are set if instantiated via code
@@ -232,13 +238,13 @@ func _on_node_removed(node: Node):
 	if _pre_removal_paths.has(inst_id):
 		_pre_removal_paths.erase(inst_id)
 
-	if _ignore_next_structure_event or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty() or id == "":
+	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty() or id == "":
 		return
 
 	rpc("remote_node_removed", id)
 
 func _on_node_renamed(node: Node):
-	if _ignore_next_structure_event or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
+	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
 		return
 
 	var parent = node.get_parent()
@@ -335,6 +341,16 @@ func receive_scene(path: String, bytes: PackedByteArray):
 		file.store_buffer(bytes)
 		file.close()
 		print("Received scene: ", path)
+
+		# Pause structure syncing while the editor reloads the scene
+		_is_reloading_scene = true
+
 		# Tell editor to reload scene
 		if network.plugin:
 			network.plugin.get_editor_interface().reload_scene_from_path(path)
+
+		# Wait for scene reload to finish and nodes to enter tree before resuming sync
+		get_tree().create_timer(1.0).timeout.connect(func():
+			_is_reloading_scene = false
+			_last_tracked_properties.clear()
+		)
