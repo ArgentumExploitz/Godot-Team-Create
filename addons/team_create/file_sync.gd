@@ -35,9 +35,8 @@ func sync_all_files():
 		for path in all_files:
 			if path.begins_with("res://addons/team_create"):
 				continue
-			var file = FileAccess.open(path, FileAccess.READ)
-			if file:
-				file_hashes[path] = file.get_md5()
+			if FileAccess.file_exists(path):
+				file_hashes[path] = FileAccess.get_md5(path)
 		rpc("compare_and_sync_files", file_hashes)
 		_is_syncing_files = false
 
@@ -48,9 +47,8 @@ func sync_all_files_to_peer(id: int):
 		for path in all_files:
 			if path.begins_with("res://addons/team_create"):
 				continue
-			var file = FileAccess.open(path, FileAccess.READ)
-			if file:
-				file_hashes[path] = file.get_md5()
+			if FileAccess.file_exists(path):
+				file_hashes[path] = FileAccess.get_md5(path)
 		rpc_id(id, "compare_and_sync_files", file_hashes)
 
 func get_all_files(dir_path: String, exclude_dirs: Array = ["res://.godot"]) -> Array:
@@ -89,7 +87,7 @@ func get_all_files(dir_path: String, exclude_dirs: Array = ["res://.godot"]) -> 
 			file_name = dir.get_next()
 	return files
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func receive_project_settings(bytes: PackedByteArray):
 	var file = FileAccess.open("res://project.godot", FileAccess.WRITE)
 	if file:
@@ -97,7 +95,7 @@ func receive_project_settings(bytes: PackedByteArray):
 		file.close()
 		print("Project settings updated.")
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func compare_and_sync_files(server_hashes: Dictionary):
 	_is_syncing_files = true
 	# Only clients should execute this from server
@@ -107,9 +105,8 @@ func compare_and_sync_files(server_hashes: Dictionary):
 	for path in local_files:
 		if path.begins_with("res://addons/team_create"):
 			continue
-		var file = FileAccess.open(path, FileAccess.READ)
-		if file:
-			local_hashes[path] = file.get_md5()
+		if FileAccess.file_exists(path):
+			local_hashes[path] = FileAccess.get_md5(path)
 
 	# Find files to delete
 	for path in local_hashes:
@@ -123,7 +120,7 @@ func compare_and_sync_files(server_hashes: Dictionary):
 			rpc_id(1, "request_file", path)
 	_is_syncing_files = false
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func request_file(path: String):
 	# Validate path to prevent directory traversal / arbitrary file read
 	if not path.begins_with("res://") or ".." in path:
@@ -135,7 +132,7 @@ func request_file(path: String):
 	if bytes:
 		rpc_id(multiplayer.get_remote_sender_id(), "receive_file", path, bytes)
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func receive_file(path: String, bytes: PackedByteArray):
 	# Validate path to prevent directory traversal
 	if not path.begins_with("res://") or ".." in path:

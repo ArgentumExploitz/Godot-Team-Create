@@ -101,7 +101,7 @@ func _track_selection():
 		_last_selected_ids = selected_ids
 		rpc("update_peer_selection", multiplayer.get_unique_id(), selected_ids)
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func update_peer_selection(peer_id: int, selected_ids: Array):
 	# Add custom selection drawing logic
 	var color = network.get_user_color(peer_id)
@@ -239,7 +239,7 @@ func _on_node_renamed(node: Node):
 		var id = network.assign_unique_id(node) # New ID
 		rpc("remote_node_renamed", id, node.name)
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func remote_node_added(parent_id: String, type: String, new_name: String, new_id: String):
 	_ignore_next_structure_event = true
 	var editor = network.plugin.get_editor_interface()
@@ -254,7 +254,7 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 				new_node.owner = current_scene # Important for saving in scene
 	_ignore_next_structure_event = false
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func remote_node_removed(id: String):
 	_ignore_next_structure_event = true
 	var editor = network.plugin.get_editor_interface()
@@ -266,7 +266,7 @@ func remote_node_removed(id: String):
 			node.queue_free()
 	_ignore_next_structure_event = false
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func remote_node_renamed(new_id: String, new_name: String):
 	_ignore_next_structure_event = true
 	var editor = network.plugin.get_editor_interface()
@@ -290,7 +290,7 @@ func remote_node_renamed(new_id: String, new_name: String):
 				pass # Simplified handling for renames: usually property sync handles 'name' correctly if IDs matched.
 	_ignore_next_structure_event = false
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func update_node_property(id: String, prop_name: String, value: Variant):
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
@@ -309,7 +309,7 @@ func update_node_property(id: String, prop_name: String, value: Variant):
 				_last_tracked_properties[id] = {}
 			_last_tracked_properties[id][prop_name] = value
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func receive_scene(path: String, bytes: PackedByteArray):
 	var file = FileAccess.open(path, FileAccess.WRITE)
 	if file:
