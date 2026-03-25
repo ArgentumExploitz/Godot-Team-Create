@@ -217,6 +217,11 @@ func _on_node_added(node: Node):
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
 		return
 
+	# Capture owner state before the frame delay.
+	# Nodes instantiated from a PackedScene (like during a scene reload or sub-scene drag-and-drop)
+	# will already have their owner set. Nodes added manually via the editor GUI will have owner = null.
+	var owner_at_add = node.owner
+
 	# Delay execution slightly so properties are set if instantiated via code
 	await get_tree().process_frame
 
@@ -233,8 +238,19 @@ func _on_node_added(node: Node):
 	if not current_scene:
 		return
 
+	# Never sync the root scene node itself
+	if node == current_scene:
+		return
+
 	# Only sync nodes that are part of the edited scene
-	if node != current_scene and node.owner != current_scene:
+	if node.owner != current_scene:
+		return
+
+	# PREVENT SCENE FLOODING AND EMPTY MESHES:
+	# If the node already had an owner when it was added to the tree, it was loaded from a file
+	# (e.g., scene reload, sub-scene instantiation). Do NOT broadcast these to other peers as new nodes,
+	# because the other peers either already have them (from file sync) or they are internal children of a sub-scene.
+	if owner_at_add != null:
 		return
 
 	var parent_id = network.assign_unique_id(node.get_parent())
@@ -283,12 +299,15 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 	if current_scene:
 		var parent = network.get_node_by_unique_id(current_scene, parent_id)
 		if parent:
-			var new_node = ClassDB.instantiate(type) as Node
-			if new_node:
-				new_node.name = new_name
-				parent.add_child(new_node)
-				new_node.owner = current_scene # Important for saving in scene
-				_node_names[new_node.get_instance_id()] = new_name
+			# Prevent duplicates. If the exact node name already exists under the parent,
+			# DO NOT instantiate a new one. This fundamentally prevents exponential rejoin floods.
+			if not parent.has_node(new_name):
+				var new_node = ClassDB.instantiate(type) as Node
+				if new_node:
+					new_node.name = new_name
+					parent.add_child(new_node)
+					new_node.owner = current_scene # Important for saving in scene
+					_node_names[new_node.get_instance_id()] = new_name
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
