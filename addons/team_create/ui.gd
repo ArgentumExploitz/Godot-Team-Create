@@ -31,7 +31,7 @@ func _init() -> void:
 	users_label = RichTextLabel.new()
 	users_label.bbcode_enabled = true
 	users_label.text = "Users: 1"
-	users_label.custom_minimum_size = Vector2(0, 50)
+	users_label.custom_minimum_size = Vector2(0, 150)
 	vbox.add_child(users_label)
 
 	# IP Edit
