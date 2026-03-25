@@ -1,5 +1,7 @@
 # Godot-Team-Create
 
+<img width="722" height="564" alt="godoteam" src="https://github.com/user-attachments/assets/c8948365-a274-429e-ab95-fb524476dfa1" />
+
 > [!WARNING]
 > The plugin is still very early in development and is unstable, please don't use it for your current work!
 
