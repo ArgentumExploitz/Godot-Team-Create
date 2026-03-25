@@ -116,23 +116,22 @@ func update_peer_selection(peer_id: int, selected_ids: Array):
 		return
 
 	# Clear previous indicators
-	for node in current_scene.find_children("*", "Node"):
-		if node.has_meta("team_create_selected_by"):
-			if node.get_meta("team_create_selected_by") == peer_id:
-				node.remove_meta("team_create_selected_by")
-				for child in node.get_children():
-					if child.name == "TeamCreateSelectionOutline_" + str(peer_id):
-						child.queue_free()
+	for node in current_scene.find_children("*", "Node", true, false):
+		if node.has_meta("team_create_outline_peer"):
+			if node.get_meta("team_create_outline_peer") == peer_id:
+				node.queue_free()
+		elif node.name.begins_with("TeamCreateSelectionOutline_" + str(peer_id)):
+			# Also clean up any unmanaged older outlines by name just in case
+			node.queue_free()
 
 	# Add new indicators
 	for id in selected_ids:
 		var node = network.get_node_by_unique_id(current_scene, id)
 		if node:
-			node.set_meta("team_create_selected_by", peer_id)
-
 			if node is Node3D:
 				var outline = MeshInstance3D.new()
 				outline.name = "TeamCreateSelectionOutline_" + str(peer_id)
+				outline.set_meta("team_create_outline_peer", peer_id)
 				var mat = StandardMaterial3D.new()
 				mat.albedo_color = color
 				mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -155,6 +154,7 @@ func update_peer_selection(peer_id: int, selected_ids: Array):
 			elif node is Node2D or node is Control:
 				var outline = ColorRect.new()
 				outline.name = "TeamCreateSelectionOutline_" + str(peer_id)
+				outline.set_meta("team_create_outline_peer", peer_id)
 				outline.color = color
 				outline.color.a = 0.5
 				outline.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 0)
@@ -175,13 +175,12 @@ func clear_peer_selections(peer_id: int):
 	if not current_scene:
 		return
 
-	for node in current_scene.find_children("*", "Node"):
-		if node.has_meta("team_create_selected_by"):
-			if node.get_meta("team_create_selected_by") == peer_id:
-				node.remove_meta("team_create_selected_by")
-				for child in node.get_children():
-					if child.name == "TeamCreateSelectionOutline_" + str(peer_id):
-						child.queue_free()
+	for node in current_scene.find_children("*", "Node", true, false):
+		if node.has_meta("team_create_outline_peer"):
+			if node.get_meta("team_create_outline_peer") == peer_id:
+				node.queue_free()
+		elif node.name.begins_with("TeamCreateSelectionOutline_" + str(peer_id)):
+			node.queue_free()
 
 func push_current_scene():
 	if multiplayer.is_server():
