@@ -28,6 +28,9 @@ func _ready():
 			# Also connect existing nodes
 			_connect_tree_exiting_recursive(root)
 
+	call_deferred("_setup_undo_redo")
+
+func _setup_undo_redo():
 	if network and network.plugin:
 		var undo_redo = network.plugin.get_undo_redo()
 		if undo_redo:
@@ -283,6 +286,65 @@ func _on_node_added(node: Node):
 	_node_names[node.get_instance_id()] = new_name
 
 	rpc("remote_node_added", parent_id, type, new_name, new_id)
+
+	# Immediately sync properties of the new node to catch duplicates
+	_sync_all_node_properties(node, new_id)
+
+func _sync_all_node_properties(node: Node, id: String):
+	# Create a temporary default instance to compare against
+	var type = node.get_class()
+	if not ClassDB.can_instantiate(type):
+		return
+
+	var default_node = ClassDB.instantiate(type)
+	if not default_node:
+		return
+
+	var props = node.get_property_list()
+	var current_props = {}
+
+	for p in props:
+		if p.usage & PROPERTY_USAGE_EDITOR or p.name == "transform" or p.name == "name":
+			if p.name == "script" or p.name.begins_with("metadata/"):
+				continue
+
+			var val = node.get(p.name)
+			var default_val = default_node.get(p.name)
+
+			# Check if the property differs from the default value
+			var is_different = false
+			if typeof(val) != typeof(default_val):
+				is_different = true
+			elif typeof(val) == TYPE_OBJECT:
+				if val != default_val and val != null:
+					is_different = true
+			else:
+				if val != default_val:
+					is_different = true
+
+			if is_different:
+				if typeof(val) == TYPE_OBJECT:
+					if val is Resource:
+						if val.resource_path != "" and not "::" in val.resource_path:
+							current_props[p.name] = val.resource_path
+						else:
+							var bytes = var_to_bytes_with_objects(val)
+							current_props[p.name] = {"sub_resource_bytes": bytes}
+				else:
+					current_props[p.name] = val
+
+	default_node.free()
+
+	if not _last_tracked_properties.has(id):
+		_last_tracked_properties[id] = current_props
+	else:
+		var last_props = _last_tracked_properties[id]
+		for prop_name in current_props:
+			last_props[prop_name] = current_props[prop_name]
+
+	# Send all non-default properties
+	for prop_name in current_props:
+		rpc("update_node_property", id, prop_name, current_props[prop_name])
 
 func _on_node_removed(node: Node):
 	var inst_id = node.get_instance_id()
