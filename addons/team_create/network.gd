@@ -65,7 +65,7 @@ func _on_peer_connected(id: int):
 	if is_server:
 		# Auto sync all files when a peer joins
 		call_deferred("sync_all_files_to_peer", id)
-		call_deferred("push_current_scene_to_peer", id)
+		# NOTE: We DO NOT push the scene here anymore! The client will request it when file sync finishes.
 		# Send current peer list to the new peer
 		for existing_id in peers.keys():
 			rpc_id(id, "sync_peer_info", existing_id, peers[existing_id])
@@ -88,6 +88,22 @@ func _on_connected_to_server():
 	print("Connected to server successfully!")
 	_add_peer(1) # Add server to peers list
 	_update_ui_state()
+
+	# Wait for the initial file sync to complete before asking for the scene
+	if file_sync:
+		if not file_sync.sync_completed.is_connected(_request_scene_from_server):
+			file_sync.sync_completed.connect(_request_scene_from_server, CONNECT_ONE_SHOT)
+
+func _request_scene_from_server():
+	if plugin:
+		var efs = plugin.get_editor_interface().get_resource_filesystem()
+		# Give a slight delay for scans to start/catch up
+		await get_tree().create_timer(0.6).timeout
+		# Wait for scanning to finish
+		while efs.is_scanning():
+			await get_tree().process_frame
+
+	rpc_id(1, "request_push_scene")
 
 @rpc("any_peer", "reliable")
 func sync_peer_info(id: int, info: Dictionary):
@@ -117,6 +133,11 @@ func push_current_scene():
 func push_current_scene_to_peer(id: int):
 	if scene_sync:
 		scene_sync.push_current_scene_to_peer(id)
+
+@rpc("any_peer", "reliable")
+func request_push_scene():
+	if is_server:
+		push_current_scene_to_peer(multiplayer.get_remote_sender_id())
 
 func sync_project_settings():
 	if file_sync:
