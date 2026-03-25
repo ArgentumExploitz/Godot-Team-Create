@@ -207,6 +207,14 @@ func _on_node_added(node: Node):
 	# Delay execution slightly so properties are set if instantiated via code
 	await get_tree().process_frame
 
+	# Ensure the node still exists and has a parent after the frame delay
+	if not is_instance_valid(node) or not node.get_parent():
+		return
+
+	# Prevent syncing internal nodes like editor UI or auto-generated items
+	if node.name.begins_with("@") or node.name.begins_with("TeamCreateSelectionOutline_"):
+		return
+
 	var parent_id = network.assign_unique_id(node.get_parent())
 	var type = node.get_class()
 	var new_name = node.name
@@ -299,9 +307,12 @@ func update_node_property(id: String, prop_name: String, value: Variant):
 		if node:
 			if typeof(value) == TYPE_STRING and (value as String).begins_with("res://"):
 				# It's a resource path
-				var res = load(value)
-				if res:
-					node.set(prop_name, res)
+				if ResourceLoader.exists(value):
+					var res = load(value)
+					if res:
+						node.set(prop_name, res)
+				else:
+					printerr("Team Create: Resource file not found or is an internal sub-resource: ", value)
 			else:
 				node.set(prop_name, value)
 
