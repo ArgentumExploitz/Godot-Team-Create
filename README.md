@@ -1,5 +1,5 @@
 
-# Godot-Team-Create
+# $${ \textsf{\color{red}Godot} \ \textsf{\color{green}Team} \ \textsf{\color{blue}Create}}$$   
 
 <p align="center">
 <img width="541,5" height="423" alt="godoteam" src="https://github.com/user-attachments/assets/c8948365-a274-429e-ab95-fb524476dfa1" />
