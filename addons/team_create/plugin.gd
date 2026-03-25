@@ -16,7 +16,8 @@ func _enter_tree() -> void:
 	# Load network manager script and instantiate it as a child.
 	var network_script = preload("res://addons/team_create/network.gd")
 	network = network_script.new()
-	add_child(network)
+	network.name = "TeamCreateNetwork"
+	get_tree().root.add_child(network)
 
 	# Link UI and network
 	dock.network = network
@@ -32,6 +33,7 @@ func _exit_tree() -> void:
 		remove_control_from_docks(dock)
 		dock.queue_free()
 	if network:
+		get_tree().root.remove_child(network)
 		network.queue_free()
 
 func get_current_version() -> String:
