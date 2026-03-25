@@ -499,6 +499,11 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 		var node = network.get_node_by_unique_id(current_scene, id)
 		if node:
 			if typeof(value) == TYPE_STRING and (value as String).begins_with("res://"):
+				# Validate path to prevent directory traversal
+				if ".." in (value as String):
+					printerr("Team Create: Invalid resource path received: ", value)
+					return
+
 				# It's a resource path
 				if ResourceLoader.exists(value):
 					var res = load(value)
@@ -520,6 +525,11 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 
 @rpc("any_peer", "reliable")
 func receive_scene(path: String, bytes: PackedByteArray):
+	# Validate path to prevent directory traversal
+	if not path.begins_with("res://") or ".." in path:
+		printerr("Invalid scene path received: ", path)
+		return
+
 	var file = FileAccess.open(path, FileAccess.WRITE)
 	if file:
 		file.store_buffer(bytes)

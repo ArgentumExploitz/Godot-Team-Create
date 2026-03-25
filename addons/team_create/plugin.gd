@@ -144,6 +144,11 @@ func _extract_and_apply_update(zip_path: String) -> void:
 		if f.ends_with("/"):
 			continue # Directory
 
+		# Validate path to prevent ZipSlip traversal
+		if ".." in f:
+			printerr("Security Warning: Traversal attempt detected in update zip: ", f)
+			continue
+
 		# Ensure it's inside the addons/team_create folder
 		# GitHub zips put everything inside a root folder, e.g., "Godot-Team-Create-main/addons/team_create/..."
 		var parts = f.split("/")
