@@ -12,7 +12,7 @@ const SYNC_INTERVAL = 0.1 # Sync 10 times a second max
 var _ignore_next_structure_event = false
 var _is_reloading_scene = false
 var _pre_removal_paths = {}
-var _pre_rename_paths = {}
+var _node_names = {}
 
 func _ready():
 	var tree = Engine.get_main_loop() as SceneTree
@@ -32,6 +32,9 @@ func _ready():
 func _connect_tree_exiting_recursive(node: Node):
 	if not node.tree_exiting.is_connected(_on_node_tree_exiting.bind(node)):
 		node.tree_exiting.connect(_on_node_tree_exiting.bind(node))
+
+	_node_names[node.get_instance_id()] = node.name
+
 	for child in node.get_children():
 		_connect_tree_exiting_recursive(child)
 
@@ -225,10 +228,21 @@ func _on_node_added(node: Node):
 	if node.name.begins_with("@") or node.name.begins_with("TeamCreateSelectionOutline_"):
 		return
 
+	var editor = network.plugin.get_editor_interface()
+	var current_scene = editor.get_edited_scene_root()
+	if not current_scene:
+		return
+
+	# Only sync nodes that are part of the edited scene
+	if node != current_scene and node.owner != current_scene:
+		return
+
 	var parent_id = network.assign_unique_id(node.get_parent())
 	var type = node.get_class()
 	var new_name = node.name
 	var new_id = network.assign_unique_id(node)
+
+	_node_names[node.get_instance_id()] = new_name
 
 	rpc("remote_node_added", parent_id, type, new_name, new_id)
 
@@ -237,6 +251,9 @@ func _on_node_removed(node: Node):
 	var id = _pre_removal_paths.get(inst_id, "")
 	if _pre_removal_paths.has(inst_id):
 		_pre_removal_paths.erase(inst_id)
+
+	if _node_names.has(inst_id):
+		_node_names.erase(inst_id)
 
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty() or id == "":
 		return
@@ -248,14 +265,15 @@ func _on_node_renamed(node: Node):
 		return
 
 	var parent = node.get_parent()
-	if parent:
-		# The node is already renamed, so its current path is the NEW path.
-		# The OLD path is parent_path + "/" + old_name.
-		# But since we don't have the old name, we rely on the parent path and the fact that we can search children
-		# by their previous path. Instead of guessing, we just sync the whole structure via parent if renamed.
-		# To be robust, let's find the old name by seeing which tracked property had a name change.
-		var id = network.assign_unique_id(node) # New ID
-		rpc("remote_node_renamed", id, node.name)
+	var inst_id = node.get_instance_id()
+	if parent and _node_names.has(inst_id):
+		var old_name = _node_names[inst_id]
+		var new_name = node.name
+
+		if old_name != new_name:
+			_node_names[inst_id] = new_name
+			var parent_id = network.assign_unique_id(parent)
+			rpc("remote_node_renamed_exact", parent_id, old_name, new_name)
 
 @rpc("any_peer", "reliable")
 func remote_node_added(parent_id: String, type: String, new_name: String, new_id: String):
@@ -270,6 +288,7 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 				new_node.name = new_name
 				parent.add_child(new_node)
 				new_node.owner = current_scene # Important for saving in scene
+				_node_names[new_node.get_instance_id()] = new_name
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
@@ -280,32 +299,28 @@ func remote_node_removed(id: String):
 	if current_scene:
 		var node = network.get_node_by_unique_id(current_scene, id)
 		if node and node != current_scene:
+			_node_names.erase(node.get_instance_id())
 			node.get_parent().remove_child(node)
 			node.queue_free()
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
 func remote_node_renamed(new_id: String, new_name: String):
+	# Kept for compatibility but superseded by remote_node_renamed_exact
+	pass
+
+@rpc("any_peer", "reliable")
+func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: String):
 	_ignore_next_structure_event = true
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
 	if current_scene:
-		# We receive the NEW path (new_id).
-		# If the node's name just changed, its path ends with new_name.
-		# The parent's path is new_id without the /new_name part.
-		var parts = new_id.split("/")
-		if parts.size() > 0:
-			parts.remove_at(parts.size() - 1)
-			var parent_id = "/".join(parts)
-			if parent_id == "":
-				parent_id = "."
-
-			var parent = network.get_node_by_unique_id(current_scene, parent_id)
-			if parent:
-				# We don't know the exact old name, but we know one of the children should be renamed to new_name.
-				# We trust the other property syncs will fix everything else, so we just iterate until we find a match
-				# or we just rely on the fact that Godot syncs the whole scene occasionally.
-				pass # Simplified handling for renames: usually property sync handles 'name' correctly if IDs matched.
+		var parent = network.get_node_by_unique_id(current_scene, parent_id)
+		if parent:
+			var node = parent.get_node_or_null(old_name)
+			if node:
+				node.name = new_name
+				_node_names[node.get_instance_id()] = new_name
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
