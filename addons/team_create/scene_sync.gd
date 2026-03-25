@@ -13,6 +13,7 @@ var _ignore_next_structure_event = false
 var _is_reloading_scene = false
 var _pre_removal_paths = {}
 var _node_names = {}
+var _force_full_sync_next_frame = false
 
 func _ready():
 	var tree = Engine.get_main_loop() as SceneTree
@@ -24,10 +25,19 @@ func _ready():
 		# Hook into tree signals to capture state before the change applies
 		var root = tree.root
 		if root:
-			root.child_entered_tree.connect(_on_any_child_entered_tree.bind(root))
-
 			# Also connect existing nodes
 			_connect_tree_exiting_recursive(root)
+
+	if network and network.plugin:
+		var undo_redo = network.plugin.get_undo_redo()
+		if undo_redo:
+			if not undo_redo.version_changed.is_connected(_on_undo_redo_version_changed):
+				undo_redo.version_changed.connect(_on_undo_redo_version_changed)
+
+func _on_undo_redo_version_changed():
+	# Trigger a full check of modified nodes on the next sync interval
+	# Useful for drag-and-drop actions that aren't on actively selected nodes
+	_force_full_sync_next_frame = true
 
 func _connect_tree_exiting_recursive(node: Node):
 	if not node.tree_exiting.is_connected(_on_node_tree_exiting.bind(node)):
@@ -37,10 +47,6 @@ func _connect_tree_exiting_recursive(node: Node):
 
 	for child in node.get_children():
 		_connect_tree_exiting_recursive(child)
-
-func _on_any_child_entered_tree(node: Node, parent: Node):
-	# Listen for predelete to get path before removal
-	_connect_tree_exiting_recursive(node)
 
 func _on_node_tree_exiting(node: Node):
 	if multiplayer.has_multiplayer_peer() and not multiplayer.get_peers().is_empty():
@@ -66,10 +72,20 @@ func _track_changes_throttled():
 		_last_scene_path = current_scene.scene_file_path
 		_last_tracked_properties.clear()
 
-	# ONLY track changes for selected nodes to save massive performance costs
-	var selected = editor.get_selection().get_selected_nodes()
-	for node in selected:
+	if _force_full_sync_next_frame:
+		_force_full_sync_next_frame = false
+		_check_all_nodes(current_scene)
+	else:
+		# ONLY track changes for selected nodes to save massive performance costs
+		var selected = editor.get_selection().get_selected_nodes()
+		for node in selected:
+			_check_single_node_changes(node)
+
+func _check_all_nodes(node: Node):
+	if node.owner == network.plugin.get_editor_interface().get_edited_scene_root() or node == network.plugin.get_editor_interface().get_edited_scene_root():
 		_check_single_node_changes(node)
+	for child in node.get_children():
+		_check_all_nodes(child)
 
 func _check_single_node_changes(node: Node):
 	var id = network.assign_unique_id(node)
@@ -214,6 +230,12 @@ func push_current_scene_to_peer(id: int):
 					rpc_id(id, "receive_scene", path, bytes)
 
 func _on_node_added(node: Node):
+	# Connect for tracking before removal
+	if not node.tree_exiting.is_connected(_on_node_tree_exiting.bind(node)):
+		node.tree_exiting.connect(_on_node_tree_exiting.bind(node))
+
+	_node_names[node.get_instance_id()] = node.name
+
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
 		return
 
