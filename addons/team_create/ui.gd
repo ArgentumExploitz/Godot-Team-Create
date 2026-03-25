@@ -13,6 +13,7 @@ var disconnect_btn: Button
 var push_scene_btn: Button
 var sync_settings_btn: Button
 var sync_files_btn: Button
+var update_btn: Button
 
 func _init() -> void:
 	name = "LAN Sync"
@@ -78,6 +79,11 @@ func _init() -> void:
 	sync_files_btn.pressed.connect(_on_sync_files_pressed)
 	vbox.add_child(sync_files_btn)
 
+	update_btn = Button.new()
+	update_btn.text = "Check for Updates"
+	update_btn.pressed.connect(_on_update_pressed)
+	vbox.add_child(update_btn)
+
 func _ready() -> void:
 	pass
 
@@ -142,3 +148,10 @@ func _on_sync_settings_pressed() -> void:
 func _on_sync_files_pressed() -> void:
 	if network:
 		network.sync_all_files()
+
+func _on_update_pressed() -> void:
+	if network and network.plugin:
+		if update_btn.text == "Update Available!":
+			network.plugin.download_update()
+		else:
+			network.plugin.check_for_updates()

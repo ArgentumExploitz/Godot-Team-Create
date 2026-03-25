@@ -24,9 +24,133 @@ func _enter_tree() -> void:
 
 	network.plugin = self
 
+	# Check for updates on load
+	check_for_updates()
+
 func _exit_tree() -> void:
 	if dock:
 		remove_control_from_docks(dock)
 		dock.queue_free()
 	if network:
 		network.queue_free()
+
+func get_current_version() -> String:
+	var cfg = ConfigFile.new()
+	var err = cfg.load("res://addons/team_create/plugin.cfg")
+	if err == OK:
+		return cfg.get_value("plugin", "version", "1.0")
+	return "1.0"
+
+func check_for_updates() -> void:
+	var http_request = HTTPRequest.new()
+	add_child(http_request)
+	http_request.request_completed.connect(self._http_request_completed.bind(http_request))
+	var error = http_request.request("https://raw.githubusercontent.com/ArgentumExploitz/Godot-Team-Create/main/addons/team_create/plugin.cfg")
+	if error != OK:
+		push_error("An error occurred in the HTTP request.")
+
+func _http_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest) -> void:
+	if response_code == 200:
+		var response_str = body.get_string_from_utf8()
+		var lines = response_str.split("\n")
+		var latest_version = ""
+		for line in lines:
+			if line.begins_with("version="):
+				latest_version = line.split("=")[1].replace("\"", "").strip_edges()
+				break
+
+		var current_version = get_current_version()
+		if latest_version != "" and latest_version != current_version:
+			print("Team Create update available: " + latest_version + " (Current: " + current_version + ")")
+			_prompt_update()
+		else:
+			print("Team Create is up to date.")
+	else:
+		push_error("Failed to check for updates.")
+
+	http_request.queue_free()
+
+var downloading = false
+
+func _prompt_update() -> void:
+	if downloading:
+		return
+	if dock and dock.update_btn:
+		dock.update_btn.text = "Update Available!"
+		dock.update_btn.add_theme_color_override("font_color", Color.GREEN)
+
+func download_update() -> void:
+	if downloading:
+		return
+	downloading = true
+	if dock and dock.update_btn:
+		dock.update_btn.text = "Downloading..."
+
+	var http_request = HTTPRequest.new()
+	add_child(http_request)
+	http_request.request_completed.connect(self._download_request_completed.bind(http_request))
+	var error = http_request.request("https://github.com/ArgentumExploitz/Godot-Team-Create/archive/refs/heads/main.zip")
+	if error != OK:
+		push_error("An error occurred in the HTTP download request.")
+		downloading = false
+
+func _download_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest) -> void:
+	if response_code == 200 or response_code == 301 or response_code == 302:
+		# Write to temp file
+		var file = FileAccess.open("user://team_create_update.zip", FileAccess.WRITE)
+		if file:
+			file.store_buffer(body)
+			file.close()
+			_extract_and_apply_update("user://team_create_update.zip")
+		else:
+			push_error("Failed to save update zip file.")
+			downloading = false
+	else:
+		push_error("Failed to download update. Response code: " + str(response_code))
+		downloading = false
+
+	http_request.queue_free()
+
+func _extract_and_apply_update(zip_path: String) -> void:
+	# Use Godot's ZIPReader
+	var zip_reader = ZIPReader.new()
+	var err = zip_reader.open(zip_path)
+	if err != OK:
+		push_error("Failed to open update zip.")
+		downloading = false
+		return
+
+	var files = zip_reader.get_files()
+	for f in files:
+		if f.ends_with("/"):
+			continue # Directory
+
+		# Ensure it's inside the addons/team_create folder
+		# GitHub zips put everything inside a root folder, e.g., "Godot-Team-Create-main/addons/team_create/..."
+		var parts = f.split("/")
+		if parts.size() > 2 and parts[1] == "addons" and parts[2] == "team_create":
+			var dest_path = "res://" + "/".join(parts.slice(1, parts.size()))
+
+			# Ensure directory exists
+			var dest_dir = dest_path.get_base_dir()
+			if not DirAccess.dir_exists_absolute(dest_dir):
+				DirAccess.make_dir_recursive_absolute(dest_dir)
+
+			var content = zip_reader.read_file(f)
+			var out_file = FileAccess.open(dest_path, FileAccess.WRITE)
+			if out_file:
+				out_file.store_buffer(content)
+				out_file.close()
+			else:
+				push_error("Failed to write updated file: " + dest_path)
+
+	zip_reader.close()
+	DirAccess.remove_absolute(zip_path)
+	print("Update applied successfully! Restarting editor...")
+
+	if dock and dock.update_btn:
+		dock.update_btn.text = "Restarting..."
+
+	# Restart editor
+	var editor_interface = get_editor_interface()
+	editor_interface.restart_editor()
