@@ -75,8 +75,13 @@ func _check_single_node_changes(node: Node):
 			var val = node.get(p.name)
 			if typeof(val) == TYPE_OBJECT:
 				# For resources like Mesh or Material, sync the resource path if possible
-				if val is Resource and val.resource_path != "":
-					current_props[p.name] = val.resource_path
+				if val is Resource:
+					if val.resource_path != "" and not "::" in val.resource_path:
+						current_props[p.name] = val.resource_path
+					else:
+						# Serialize local sub-resources or resources without a file path
+						var bytes = var_to_bytes_with_objects(val)
+						current_props[p.name] = {"sub_resource_bytes": bytes}
 			else:
 				current_props[p.name] = val
 
@@ -313,6 +318,10 @@ func update_node_property(id: String, prop_name: String, value: Variant):
 						node.set(prop_name, res)
 				else:
 					printerr("Team Create: Resource file not found or is an internal sub-resource: ", value)
+			elif typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes"):
+				var res = bytes_to_var_with_objects(value["sub_resource_bytes"])
+				if res is Resource:
+					node.set(prop_name, res)
 			else:
 				node.set(prop_name, value)
 
