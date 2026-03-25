@@ -54,13 +54,7 @@ func disconnect_peer():
 
 func _add_peer(id: int):
 	if not peers.has(id):
-		var rng = RandomNumberGenerator.new()
-		rng.seed = id
-		var color = Color.from_hsv(rng.randf(), 0.8, 0.9)
-		var adjectives = ["Fast", "Cool", "Smart", "Brave", "Wild", "Quick", "Sly", "Bold"]
-		var nouns = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
-		var username = adjectives[rng.randi() % adjectives.size()] + nouns[rng.randi() % nouns.size()] + str(rng.randi() % 100)
-		peers[id] = {"username": username, "color": color}
+		peers[id] = _get_default_peer_info(id)
 
 func _on_peer_connected(id: int):
 	print("Peer connected: ", id)
@@ -154,16 +148,22 @@ static func get_node_by_unique_id(root: Node, id: String) -> Node:
 		return root.get_node(id)
 	return null
 
+func _get_default_peer_info(id: int) -> Dictionary:
+	var rng = RandomNumberGenerator.new()
+	rng.seed = id
+	var color = Color.from_hsv(rng.randf(), 0.8, 0.9)
+	var adjectives = ["Fast", "Cool", "Smart", "Brave", "Wild", "Quick", "Sly", "Bold"]
+	var nouns = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
+	var username = adjectives[rng.randi() % adjectives.size()] + nouns[rng.randi() % nouns.size()] + str(rng.randi() % 100)
+	return {"username": username, "color": color}
+
 # User Info management
 func get_user_color(id: int) -> Color:
 	if peers.has(id):
 		return peers[id]["color"]
-	# Fallback
-	var rng = RandomNumberGenerator.new()
-	rng.seed = id
-	return Color.from_hsv(rng.randf(), 0.8, 0.9)
+	return _get_default_peer_info(id)["color"]
 
 func get_username(id: int) -> String:
 	if peers.has(id):
 		return peers[id]["username"]
-	return "User" + str(id)
+	return _get_default_peer_info(id)["username"]
