@@ -95,7 +95,7 @@ func _on_connected_to_server():
 	_add_peer(1) # Add server to peers list
 	_update_ui_state()
 
-@rpc("any_peer", "call_remote", "reliable")
+@rpc("any_peer", "reliable")
 func sync_peer_info(id: int, info: Dictionary):
 	peers[id] = info
 	if ui:
