@@ -157,6 +157,21 @@ func receive_file(path: String, bytes: PackedByteArray):
 		file.store_buffer(bytes)
 		file.close()
 		print("Received file: ", path)
+
+		# If the file being received is the currently edited scene, the editor will auto-reload it.
+		# Pause structure syncing to prevent massive node-removal/addition floods across the network.
+		if network and network.scene_sync and network.plugin:
+			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+			if current_scene and current_scene.scene_file_path == path:
+				network.scene_sync._is_reloading_scene = true
+
+				# Wait for Godot to complete the asynchronous scene reload
+				get_tree().create_timer(1.5).timeout.connect(func():
+					if is_instance_valid(network) and network.scene_sync:
+						network.scene_sync._is_reloading_scene = false
+						network.scene_sync._last_tracked_properties.clear()
+				)
+
 		# Trigger Editor resource scan if it's an asset
 		if network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
 			network.plugin.get_editor_interface().get_resource_filesystem().scan()
