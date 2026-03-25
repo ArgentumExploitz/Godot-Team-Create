@@ -3,6 +3,7 @@ extends Node
 
 var network: Node
 var _is_syncing_files = false
+var _scan_timer: SceneTreeTimer
 
 func _ready():
 	call_deferred("_setup_fs_signals")
@@ -28,17 +29,16 @@ func sync_project_settings():
 			rpc("receive_project_settings", bytes)
 
 func sync_all_files():
-	if multiplayer.is_server():
-		_is_syncing_files = true
-		var all_files = get_all_files("res://")
-		var file_hashes = {}
-		for path in all_files:
-			if path.begins_with("res://addons/team_create"):
-				continue
-			if FileAccess.file_exists(path):
-				file_hashes[path] = FileAccess.get_md5(path)
-		rpc("compare_and_sync_files", file_hashes)
-		_is_syncing_files = false
+	_is_syncing_files = true
+	var all_files = get_all_files("res://")
+	var file_hashes = {}
+	for path in all_files:
+		if path.begins_with("res://addons/team_create"):
+			continue
+		if FileAccess.file_exists(path):
+			file_hashes[path] = FileAccess.get_md5(path)
+	rpc("compare_and_sync_files", file_hashes)
+	_is_syncing_files = false
 
 func sync_all_files_to_peer(id: int):
 	if multiplayer.is_server():
@@ -96,9 +96,9 @@ func receive_project_settings(bytes: PackedByteArray):
 		print("Project settings updated.")
 
 @rpc("any_peer", "reliable")
-func compare_and_sync_files(server_hashes: Dictionary):
+func compare_and_sync_files(peer_hashes: Dictionary):
 	_is_syncing_files = true
-	# Only clients should execute this from server
+	var sender_id = multiplayer.get_remote_sender_id()
 	var local_files = get_all_files("res://")
 	var local_hashes = {}
 
@@ -108,16 +108,17 @@ func compare_and_sync_files(server_hashes: Dictionary):
 		if FileAccess.file_exists(path):
 			local_hashes[path] = FileAccess.get_md5(path)
 
-	# Find files to delete
-	for path in local_hashes:
-		if not server_hashes.has(path):
-			DirAccess.remove_absolute(path)
-			print("Deleted unused file: ", path)
+	# Find files to delete (only allow the server to delete files to prevent clients wiping the server)
+	if sender_id == 1:
+		for path in local_hashes:
+			if not peer_hashes.has(path):
+				DirAccess.remove_absolute(path)
+				print("Deleted unused file: ", path)
 
 	# Request differing files
-	for path in server_hashes:
-		if not local_hashes.has(path) or local_hashes[path] != server_hashes[path]:
-			rpc_id(1, "request_file", path)
+	for path in peer_hashes:
+		if not local_hashes.has(path) or local_hashes[path] != peer_hashes[path]:
+			rpc_id(sender_id, "request_file", path)
 	_is_syncing_files = false
 
 @rpc("any_peer", "reliable")
@@ -172,6 +173,12 @@ func receive_file(path: String, bytes: PackedByteArray):
 						network.scene_sync._last_tracked_properties.clear()
 				)
 
-		# Trigger Editor resource scan if it's an asset
+		# Trigger Editor resource scan if it's an asset, debounced to prevent premature imports generating new UIDs
 		if network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
-			network.plugin.get_editor_interface().get_resource_filesystem().scan()
+			if _scan_timer == null:
+				_scan_timer = get_tree().create_timer(0.5)
+				_scan_timer.timeout.connect(func():
+					_scan_timer = null
+					if network and network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
+						network.plugin.get_editor_interface().get_resource_filesystem().scan()
+				)
