@@ -12,6 +12,14 @@ var peers = {} # Dictionary mapping peer_id to user info (username, color)
 var file_sync
 var scene_sync
 
+# WebRTC
+var webrtc_peer: WebRTCMultiplayerPeer
+var webrtc_connection: WebRTCPeerConnection
+var is_webrtc = false
+var webrtc_candidates = []
+var local_sdp_type = ""
+var local_sdp = ""
+
 func _ready():
 	name = "TeamCreateNetwork"
 	# Load sync modules
@@ -47,7 +55,15 @@ func join_server(ip: String):
 	_add_peer(multiplayer.get_unique_id())
 
 func disconnect_peer():
-	peer.close()
+	if is_webrtc:
+		if webrtc_peer:
+			webrtc_peer.close()
+		webrtc_peer = null
+		webrtc_connection = null
+		is_webrtc = false
+	else:
+		if peer:
+			peer.close()
 	multiplayer.multiplayer_peer = null
 	peers.clear()
 	if ui:
@@ -63,6 +79,8 @@ func _on_peer_connected(id: int):
 	_add_peer(id)
 	if ui:
 		ui.update_users_count(peers.size())
+
+	_update_ui_state()
 
 	if is_server:
 		# Auto sync all files when a peer joins
@@ -125,7 +143,8 @@ func _update_ui_state():
 	if ui:
 		ui.set_connected(is_server)
 		var username = get_username(multiplayer.get_unique_id())
-		ui.status_label.text = "Status: " + username + " Connected"
+		var protocol = "WebRTC" if is_webrtc else "LAN"
+		ui.status_label.text = "Status: " + username + " Connected (" + protocol + ")"
 		ui.update_users_count(peers.size())
 
 func push_current_scene():
@@ -190,3 +209,111 @@ func get_username(id: int) -> String:
 	if peers.has(id):
 		return peers[id]["username"]
 	return _get_default_peer_info(id)["username"]
+
+func webrtc_host():
+	webrtc_candidates.clear()
+	webrtc_peer = WebRTCMultiplayerPeer.new()
+	webrtc_peer.create_server()
+	multiplayer.multiplayer_peer = webrtc_peer
+	is_server = true
+	is_webrtc = true
+	_add_peer(1)
+
+	webrtc_connection = WebRTCPeerConnection.new()
+	webrtc_connection.initialize({
+		"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+	})
+
+	webrtc_connection.session_description_created.connect(_webrtc_offer_created)
+	webrtc_connection.ice_candidate_created.connect(_webrtc_ice_candidate_created)
+
+	webrtc_peer.add_peer(webrtc_connection, 2) # For manual 1-to-1 signaling
+
+	webrtc_connection.create_offer()
+
+func webrtc_join():
+	webrtc_candidates.clear()
+	webrtc_peer = WebRTCMultiplayerPeer.new()
+	webrtc_peer.create_client(2)
+	multiplayer.multiplayer_peer = webrtc_peer
+	is_server = false
+	is_webrtc = true
+	_add_peer(multiplayer.get_unique_id())
+
+	webrtc_connection = WebRTCPeerConnection.new()
+	webrtc_connection.initialize({
+		"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+	})
+
+	webrtc_connection.session_description_created.connect(_webrtc_offer_created)
+	webrtc_connection.ice_candidate_created.connect(_webrtc_ice_candidate_created)
+
+	webrtc_peer.add_peer(webrtc_connection, 1)
+
+	if ui:
+		ui.update_webrtc_text("Paste Host Offer JSON here, then click Confirm")
+
+func _webrtc_offer_created(type: String, sdp: String):
+	local_sdp_type = type
+	local_sdp = sdp
+	webrtc_connection.set_local_description(type, sdp)
+	call_deferred("_update_webrtc_output")
+
+func _webrtc_ice_candidate_created(media: String, index: int, name: String):
+	webrtc_candidates.append({"media": media, "index": index, "name": name})
+	call_deferred("_update_webrtc_output")
+
+func _update_webrtc_output():
+	if not webrtc_connection:
+		return
+	if local_sdp_type == "":
+		return
+
+	var timer = get_tree().create_timer(1.0)
+	await timer.timeout
+
+	if not webrtc_connection:
+		return
+
+	var dict = {
+		"type": local_sdp_type,
+		"sdp": local_sdp,
+		"candidates": webrtc_candidates
+	}
+	var json = JSON.stringify(dict)
+	if ui:
+		ui.update_webrtc_text(json)
+
+func webrtc_confirm(json_str: String):
+	if not is_webrtc or not webrtc_connection:
+		print("WebRTC not initialized")
+		return
+
+	if ui:
+		ui.disable_webrtc_confirm()
+
+	var json = JSON.new()
+	if json.parse(json_str) != OK:
+		print("Failed to parse JSON")
+		if ui:
+			ui.enable_webrtc_confirm()
+		return
+
+	var data = json.get_data()
+	if typeof(data) != TYPE_DICTIONARY:
+		print("Invalid JSON data")
+		if ui:
+			ui.enable_webrtc_confirm()
+		return
+
+	if data.has("type") and data.has("sdp"):
+		webrtc_connection.set_remote_description(data["type"], data["sdp"])
+
+		# If we are client joining, and we just got the offer, create answer
+		if not is_server and data["type"] == "offer":
+			webrtc_candidates.clear() # Clear any old ones
+			webrtc_connection.create_answer()
+
+	if data.has("candidates"):
+		for cand in data["candidates"]:
+			webrtc_connection.add_ice_candidate(cand["media"], cand["index"], cand["name"])
