@@ -14,6 +14,7 @@ var _is_reloading_scene = false
 var _pre_removal_paths = {}
 var _node_names = {}
 var _force_full_sync_next_frame = false
+var _pending_resource_properties = []
 
 func _ready():
 	var tree = Engine.get_main_loop() as SceneTree
@@ -73,6 +74,24 @@ func _process(delta):
 		_time_since_sync = 0.0
 		_track_selection()
 		_track_changes_throttled()
+
+	# Process pending resource properties (waiting for file sync)
+	for i in range(_pending_resource_properties.size() - 1, -1, -1):
+		var pending = _pending_resource_properties[i]
+		if ResourceLoader.exists(pending.value):
+			var editor = network.plugin.get_editor_interface()
+			var current_scene = editor.get_edited_scene_root()
+			if current_scene:
+				var node = network.get_node_by_unique_id(current_scene, pending.id)
+				if node:
+					var res = load(pending.value)
+					if res:
+						node.set(pending.prop_name, res)
+			_pending_resource_properties.remove_at(i)
+		else:
+			pending.retries -= 1
+			if pending.retries <= 0:
+				_pending_resource_properties.remove_at(i)
 
 func _track_changes_throttled():
 	var editor = network.plugin.get_editor_interface()
@@ -486,7 +505,8 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 					if res:
 						node.set(prop_name, res)
 				else:
-					printerr("Team Create: Resource file not found or is an internal sub-resource: ", value)
+					# Push to pending queue waiting for file sync to complete
+					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "retries": 100}) # About 1-2 seconds at 60 FPS
 			elif typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes"):
 				var res = bytes_to_var_with_objects(value["sub_resource_bytes"])
 				if res is Resource:
