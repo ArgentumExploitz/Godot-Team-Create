@@ -44,32 +44,49 @@ func get_current_version() -> String:
 func check_for_updates() -> void:
 	var http_request = HTTPRequest.new()
 	add_child(http_request)
+
+	# Setting TLS/SSL parameters may be needed depending on the Godot version
+	# But generally githubusercontent works with default.
+	# We also need to delay the request slightly if the plugin just loaded.
+
 	http_request.request_completed.connect(self._http_request_completed.bind(http_request))
-	var error = http_request.request("https://raw.githubusercontent.com/ArgentumExploitz/Godot-Team-Create/main/addons/team_create/plugin.cfg")
+	# Using raw API to bypass raw.githubusercontent caching and issues
+	var headers = ["User-Agent: Godot-Team-Create-Plugin"]
+	var error = http_request.request("https://api.github.com/repos/ArgentumExploitz/Godot-Team-Create/contents/addons/team_create/plugin.cfg", headers)
 	if error != OK:
-		push_error("An error occurred in the HTTP request.")
+		print("An error occurred in the HTTP request.")
 
 func _http_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest) -> void:
-	if response_code == 200:
-		var response_str = body.get_string_from_utf8()
-		var lines = response_str.split("\n")
-		var latest_version = ""
-		for line in lines:
-			if line.begins_with("version="):
-				latest_version = line.split("=")[1].replace("\"", "").strip_edges()
-				break
+	if result == HTTPRequest.RESULT_SUCCESS and response_code == 200:
+		var json = JSON.new()
+		var error = json.parse(body.get_string_from_utf8())
+		if error != OK:
+			print("Failed to parse GitHub API response.")
+			http_request.queue_free()
+			return
 
-		var current_version = get_current_version()
-		if latest_version != "" and latest_version != current_version:
-			print("Team Create update available: " + latest_version + " (Current: " + current_version + ")")
-			_prompt_update()
+		var data = json.get_data()
+		if typeof(data) == TYPE_DICTIONARY and data.has("content") and data.has("encoding") and data["encoding"] == "base64":
+			var content = Marshalls.base64_to_utf8(data["content"])
+			var lines = content.split("\n")
+			var latest_version = ""
+			for line in lines:
+				if line.begins_with("version="):
+					latest_version = line.split("=")[1].replace("\"", "").strip_edges()
+					break
+
+			var current_version = get_current_version()
+			if latest_version != "" and latest_version != current_version:
+				print("Team Create update available: " + latest_version + " (Current: " + current_version + ")")
+				_prompt_update()
+			else:
+				print("Team Create is up to date.")
 		else:
-			print("Team Create is up to date.")
+			print("Failed to check for updates: Invalid content.")
 	else:
-		push_error("Failed to check for updates.")
+		print("Failed to check for updates. Result: " + str(result) + ", Code: " + str(response_code))
 
 	http_request.queue_free()
-
 var downloading = false
 
 func _prompt_update() -> void:
@@ -89,13 +106,15 @@ func download_update() -> void:
 	var http_request = HTTPRequest.new()
 	add_child(http_request)
 	http_request.request_completed.connect(self._download_request_completed.bind(http_request))
-	var error = http_request.request("https://github.com/ArgentumExploitz/Godot-Team-Create/archive/refs/heads/main.zip")
+	# Using raw GitHub repo download link
+	var headers = ["User-Agent: Godot-Team-Create-Plugin"]
+	var error = http_request.request("https://github.com/ArgentumExploitz/Godot-Team-Create/archive/refs/heads/main.zip", headers)
 	if error != OK:
-		push_error("An error occurred in the HTTP download request.")
+		print("An error occurred in the HTTP download request.")
 		downloading = false
 
 func _download_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest) -> void:
-	if response_code == 200 or response_code == 301 or response_code == 302:
+	if result == HTTPRequest.RESULT_SUCCESS and (response_code == 200 or response_code == 301 or response_code == 302):
 		# Write to temp file
 		var file = FileAccess.open("user://team_create_update.zip", FileAccess.WRITE)
 		if file:
@@ -103,10 +122,10 @@ func _download_request_completed(result: int, response_code: int, headers: Packe
 			file.close()
 			_extract_and_apply_update("user://team_create_update.zip")
 		else:
-			push_error("Failed to save update zip file.")
+			print("Failed to save update zip file.")
 			downloading = false
 	else:
-		push_error("Failed to download update. Response code: " + str(response_code))
+		print("Failed to download update. Response code: " + str(response_code))
 		downloading = false
 
 	http_request.queue_free()
@@ -116,7 +135,7 @@ func _extract_and_apply_update(zip_path: String) -> void:
 	var zip_reader = ZIPReader.new()
 	var err = zip_reader.open(zip_path)
 	if err != OK:
-		push_error("Failed to open update zip.")
+		print("Failed to open update zip.")
 		downloading = false
 		return
 
@@ -142,7 +161,7 @@ func _extract_and_apply_update(zip_path: String) -> void:
 				out_file.store_buffer(content)
 				out_file.close()
 			else:
-				push_error("Failed to write updated file: " + dest_path)
+				print("Failed to write updated file: " + dest_path)
 
 	zip_reader.close()
 	DirAccess.remove_absolute(zip_path)
