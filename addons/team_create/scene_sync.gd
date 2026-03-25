@@ -548,21 +548,39 @@ func receive_scene(path: String, bytes: PackedByteArray):
 		printerr("Invalid scene path received: ", path)
 		return
 
+	if network and network.plugin:
+		var editor = network.plugin.get_editor_interface()
+		var current_scene = editor.get_edited_scene_root()
+		var open_scenes = editor.get_open_scenes()
+
+		var is_active = false
+		if current_scene and current_scene.scene_file_path == path:
+			is_active = true
+
+		if is_active:
+			# 1. Skip writing to disk so Godot does not auto-reload
+			print("Team Create: Ignored saving active scene to disk to prevent auto-reload flood.")
+			_is_reloading_scene = true
+			_force_full_sync_next_frame = true
+
+			get_tree().create_timer(0.5).timeout.connect(func():
+				_is_reloading_scene = false
+			)
+			return
+		elif path in open_scenes:
+			# 2. Scene is open in tabs but not active ("closed" in the context of currently viewing)
+			# Switch to the tab, close it, and switch back
+			var prev_path = current_scene.scene_file_path if current_scene else ""
+			editor.open_scene_from_path(path)
+			editor.close_scene()
+
+			if prev_path != "":
+				editor.open_scene_from_path(prev_path)
+
+			print("Team Create: Closed updated background scene tab: ", path)
+
 	var file = FileAccess.open(path, FileAccess.WRITE)
 	if file:
 		file.store_buffer(bytes)
 		file.close()
 		print("Received scene: ", path)
-
-		# Pause structure syncing while the editor reloads the scene
-		_is_reloading_scene = true
-
-		# Tell editor to reload scene
-		if network.plugin:
-			network.plugin.get_editor_interface().reload_scene_from_path(path)
-
-		# Wait for scene reload to finish and nodes to enter tree before resuming sync
-		get_tree().create_timer(1.0).timeout.connect(func():
-			_is_reloading_scene = false
-			_last_tracked_properties.clear()
-		)
