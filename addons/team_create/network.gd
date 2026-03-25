@@ -17,11 +17,13 @@ func _ready():
 	# Load sync modules
 	var file_sync_script = preload("res://addons/team_create/file_sync.gd")
 	file_sync = file_sync_script.new()
+	file_sync.name = "TeamCreateFileSync"
 	file_sync.network = self
 	add_child(file_sync)
 
 	var scene_sync_script = preload("res://addons/team_create/scene_sync.gd")
 	scene_sync = scene_sync_script.new()
+	scene_sync.name = "TeamCreateSceneSync"
 	scene_sync.network = self
 	add_child(scene_sync)
 
