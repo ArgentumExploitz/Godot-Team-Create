@@ -4,6 +4,8 @@ extends Node
 var network: Node
 var _is_syncing_files = false
 var _scan_timer: SceneTreeTimer
+var _pending_files_to_receive = 0
+signal sync_completed
 
 func _ready():
 	call_deferred("_setup_fs_signals")
@@ -116,9 +118,30 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 				print("Deleted unused file: ", path)
 
 	# Request differing files
+	var files_to_request = []
 	for path in peer_hashes:
 		if not local_hashes.has(path) or local_hashes[path] != peer_hashes[path]:
-			rpc_id(sender_id, "request_file", path)
+			files_to_request.append(path)
+
+	# Sort requests so scenes are requested LAST to ensure assets are downloaded first
+	files_to_request.sort_custom(func(a, b):
+		var a_is_scene = a.ends_with(".tscn") or a.ends_with(".scn")
+		var b_is_scene = b.ends_with(".tscn") or b.ends_with(".scn")
+		if a_is_scene and not b_is_scene:
+			return false
+		if b_is_scene and not a_is_scene:
+			return true
+		return a < b
+	)
+
+	_pending_files_to_receive = files_to_request.size()
+
+	for path in files_to_request:
+		rpc_id(sender_id, "request_file", path)
+
+	if _pending_files_to_receive == 0:
+		sync_completed.emit()
+
 	_is_syncing_files = false
 
 @rpc("any_peer", "reliable")
@@ -182,3 +205,8 @@ func receive_file(path: String, bytes: PackedByteArray):
 					if network and network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
 						network.plugin.get_editor_interface().get_resource_filesystem().scan()
 				)
+
+		if _pending_files_to_receive > 0:
+			_pending_files_to_receive -= 1
+			if _pending_files_to_receive <= 0:
+				sync_completed.emit()

@@ -63,7 +63,14 @@ func _on_node_tree_exiting(node: Node):
 			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
 			if current_scene:
 				scene_path = current_scene.scene_file_path
-		_pre_removal_paths[node.get_instance_id()] = {"id": network.assign_unique_id(node), "scene_path": scene_path}
+
+		var root_node = null
+		if network and network.plugin:
+			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+			if current_scene:
+				root_node = current_scene
+
+		_pre_removal_paths[node.get_instance_id()] = {"id": network.assign_unique_id(node), "scene_path": scene_path, "root_node": root_node}
 
 func _process(delta):
 	if not network or not network.plugin or network.peer.get_connection_status() != ENetMultiplayerPeer.CONNECTION_CONNECTED:
@@ -382,9 +389,11 @@ func _on_node_removed(node: Node):
 	var pre_data = _pre_removal_paths.get(inst_id, {})
 	var id = ""
 	var scene_path = ""
+	var root_node = null
 	if typeof(pre_data) == TYPE_DICTIONARY:
 		id = pre_data.get("id", "")
 		scene_path = pre_data.get("scene_path", "")
+		root_node = pre_data.get("root_node")
 	elif typeof(pre_data) == TYPE_STRING:
 		id = pre_data
 
@@ -395,6 +404,15 @@ func _on_node_removed(node: Node):
 		_node_names.erase(inst_id)
 
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty() or id == "":
+		return
+
+	# Delay execution slightly to check if the scene root is also being destroyed
+	# (which happens during scene reload/close)
+	await get_tree().process_frame
+
+	# If the root node that owned this node is no longer valid, the entire scene was closed or reloaded.
+	# We should NOT broadcast individual node removals for a destroyed scene.
+	if root_node != null and not is_instance_valid(root_node):
 		return
 
 	# Prevent sending removal if the user is just closing/switching scenes.
