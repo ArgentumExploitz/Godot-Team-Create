@@ -171,6 +171,38 @@ func receive_file(path: String, bytes: PackedByteArray):
 				real_path += ".res"
 		path = real_path
 
+	# If this is a scene file, and the user has it open, we intercept writing it to disk.
+	if network and network.scene_sync and network.plugin and (path.ends_with(".tscn") or path.ends_with(".scn")):
+		var ei = network.plugin.get_editor_interface()
+		var current_scene = ei.get_edited_scene_root()
+		var open_scenes = ei.get_open_scenes()
+
+		if current_scene and current_scene.scene_file_path == path:
+			# Skip writing the file entirely so Godot does NOT auto-reload the scene.
+			# Instead, trigger a full structure resync to manually replicate it (or rely on live sync).
+			print("Team Create: Ignored saving active scene to disk to prevent auto-reload flood.")
+			network.scene_sync._is_reloading_scene = true
+			network.scene_sync._force_full_sync_next_frame = true
+			get_tree().create_timer(0.5).timeout.connect(func():
+				if is_instance_valid(network) and network.scene_sync:
+					network.scene_sync._is_reloading_scene = false
+			)
+			if _pending_files_to_receive > 0:
+				_pending_files_to_receive -= 1
+				if _pending_files_to_receive <= 0:
+					sync_completed.emit()
+			return
+		elif path in open_scenes:
+			# Scene is open but NOT active ("closed" by the user's focus).
+			# We close the background scene in tabs.
+			var prev_path = current_scene.scene_file_path if current_scene else ""
+			ei.open_scene_from_path(path)
+			ei.close_scene()
+			if prev_path != "":
+				ei.open_scene_from_path(prev_path)
+			print("Team Create: Closed background scene tab: ", path)
+			# We DO write the file below since it's no longer open.
+
 	# Ensure directory exists before writing
 	var dir_path = path.get_base_dir()
 	if not DirAccess.dir_exists_absolute(dir_path):
@@ -181,20 +213,6 @@ func receive_file(path: String, bytes: PackedByteArray):
 		file.store_buffer(bytes)
 		file.close()
 		print("Received file: ", path)
-
-		# If the file being received is the currently edited scene, the editor will auto-reload it.
-		# Pause structure syncing to prevent massive node-removal/addition floods across the network.
-		if network and network.scene_sync and network.plugin:
-			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
-			if current_scene and current_scene.scene_file_path == path:
-				network.scene_sync._is_reloading_scene = true
-
-				# Wait for Godot to complete the asynchronous scene reload
-				get_tree().create_timer(1.5).timeout.connect(func():
-					if is_instance_valid(network) and network.scene_sync:
-						network.scene_sync._is_reloading_scene = false
-						network.scene_sync._last_tracked_properties.clear()
-				)
 
 		# Trigger Editor resource scan if it's an asset, debounced to prevent premature imports generating new UIDs
 		if network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
