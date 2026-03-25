@@ -53,7 +53,16 @@ func _connect_tree_exiting_recursive(node: Node):
 
 func _on_node_tree_exiting(node: Node):
 	if multiplayer.has_multiplayer_peer() and not multiplayer.get_peers().is_empty():
-		_pre_removal_paths[node.get_instance_id()] = network.assign_unique_id(node)
+		var scene_path = ""
+		if node.owner and node.owner.scene_file_path != "":
+			scene_path = node.owner.scene_file_path
+		elif node.scene_file_path != "":
+			scene_path = node.scene_file_path
+		elif network and network.plugin:
+			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+			if current_scene:
+				scene_path = current_scene.scene_file_path
+		_pre_removal_paths[node.get_instance_id()] = {"id": network.assign_unique_id(node), "scene_path": scene_path}
 
 func _process(delta):
 	if not network or not network.plugin or network.peer.get_connection_status() != ENetMultiplayerPeer.CONNECTION_CONNECTED:
@@ -119,7 +128,7 @@ func _check_single_node_changes(node: Node):
 		var last_props = _last_tracked_properties[id]
 		for prop_name in current_props:
 			if not last_props.has(prop_name) or last_props[prop_name] != current_props[prop_name]:
-				rpc("update_node_property", id, prop_name, current_props[prop_name])
+				rpc("update_node_property", id, prop_name, current_props[prop_name], _last_scene_path)
 				last_props[prop_name] = current_props[prop_name]
 
 func _track_selection():
@@ -132,15 +141,17 @@ func _track_selection():
 
 	if selected_ids != _last_selected_ids:
 		_last_selected_ids = selected_ids
-		rpc("update_peer_selection", multiplayer.get_unique_id(), selected_ids)
+		rpc("update_peer_selection", multiplayer.get_unique_id(), selected_ids, _last_scene_path)
 
 @rpc("any_peer", "reliable")
-func update_peer_selection(peer_id: int, selected_ids: Array):
+func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String = ""):
 	# Add custom selection drawing logic
 	var color = network.get_user_color(peer_id)
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
 	if not current_scene:
+		return
+	if scene_path != "" and current_scene.scene_file_path != scene_path:
 		return
 
 	# Clear previous indicators
@@ -285,7 +296,8 @@ func _on_node_added(node: Node):
 
 	_node_names[node.get_instance_id()] = new_name
 
-	rpc("remote_node_added", parent_id, type, new_name, new_id)
+	var scene_path = current_scene.scene_file_path
+	rpc("remote_node_added", parent_id, type, new_name, new_id, scene_path)
 
 	# Immediately sync properties of the new node to catch duplicates
 	_sync_all_node_properties(node, new_id)
@@ -344,11 +356,19 @@ func _sync_all_node_properties(node: Node, id: String):
 
 	# Send all non-default properties
 	for prop_name in current_props:
-		rpc("update_node_property", id, prop_name, current_props[prop_name])
+		rpc("update_node_property", id, prop_name, current_props[prop_name], _last_scene_path)
 
 func _on_node_removed(node: Node):
 	var inst_id = node.get_instance_id()
-	var id = _pre_removal_paths.get(inst_id, "")
+	var pre_data = _pre_removal_paths.get(inst_id, {})
+	var id = ""
+	var scene_path = ""
+	if typeof(pre_data) == TYPE_DICTIONARY:
+		id = pre_data.get("id", "")
+		scene_path = pre_data.get("scene_path", "")
+	elif typeof(pre_data) == TYPE_STRING:
+		id = pre_data
+
 	if _pre_removal_paths.has(inst_id):
 		_pre_removal_paths.erase(inst_id)
 
@@ -358,7 +378,18 @@ func _on_node_removed(node: Node):
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty() or id == "":
 		return
 
-	rpc("remote_node_removed", id)
+	# Prevent sending removal if the user is just closing/switching scenes.
+	if network and network.plugin:
+		var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+		if current_scene:
+			var active_scene_path = current_scene.scene_file_path
+			if scene_path != "" and active_scene_path != scene_path:
+				return
+		else:
+			# If current_scene is null, they are closing the last scene tab.
+			return
+
+	rpc("remote_node_removed", id, scene_path)
 
 func _on_node_renamed(node: Node):
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
@@ -373,14 +404,21 @@ func _on_node_renamed(node: Node):
 		if old_name != new_name:
 			_node_names[inst_id] = new_name
 			var parent_id = network.assign_unique_id(parent)
-			rpc("remote_node_renamed_exact", parent_id, old_name, new_name)
+			var scene_path = ""
+			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+			if current_scene:
+				scene_path = current_scene.scene_file_path
+			rpc("remote_node_renamed_exact", parent_id, old_name, new_name, scene_path)
 
 @rpc("any_peer", "reliable")
-func remote_node_added(parent_id: String, type: String, new_name: String, new_id: String):
+func remote_node_added(parent_id: String, type: String, new_name: String, new_id: String, scene_path: String = ""):
 	_ignore_next_structure_event = true
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
 	if current_scene:
+		if scene_path != "" and current_scene.scene_file_path != scene_path:
+			_ignore_next_structure_event = false
+			return
 		var parent = network.get_node_by_unique_id(current_scene, parent_id)
 		if parent:
 			# Prevent duplicates. If the exact node name already exists under the parent,
@@ -395,11 +433,14 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
-func remote_node_removed(id: String):
+func remote_node_removed(id: String, scene_path: String = ""):
 	_ignore_next_structure_event = true
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
 	if current_scene:
+		if scene_path != "" and current_scene.scene_file_path != scene_path:
+			_ignore_next_structure_event = false
+			return
 		var node = network.get_node_by_unique_id(current_scene, id)
 		if node and node != current_scene:
 			_node_names.erase(node.get_instance_id())
@@ -413,11 +454,14 @@ func remote_node_renamed(new_id: String, new_name: String):
 	pass
 
 @rpc("any_peer", "reliable")
-func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: String):
+func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: String, scene_path: String = ""):
 	_ignore_next_structure_event = true
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
 	if current_scene:
+		if scene_path != "" and current_scene.scene_file_path != scene_path:
+			_ignore_next_structure_event = false
+			return
 		var parent = network.get_node_by_unique_id(current_scene, parent_id)
 		if parent:
 			var node = parent.get_node_or_null(old_name)
@@ -427,10 +471,12 @@ func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: St
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
-func update_node_property(id: String, prop_name: String, value: Variant):
+func update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
 	if current_scene:
+		if scene_path != "" and current_scene.scene_file_path != scene_path:
+			return
 		var node = network.get_node_by_unique_id(current_scene, id)
 		if node:
 			if typeof(value) == TYPE_STRING and (value as String).begins_with("res://"):
