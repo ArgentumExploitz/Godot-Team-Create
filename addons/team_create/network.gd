@@ -327,6 +327,7 @@ func webrtc_host():
 
 	webrtc_peer.add_peer(webrtc_connection, 2) # For manual 1-to-1 signaling
 
+	print("Generating WebRTC offer...")
 	webrtc_connection.create_offer()
 
 	if ui:
@@ -366,6 +367,7 @@ func webrtc_join():
 	webrtc_connection.session_description_created.connect(_webrtc_offer_created)
 	webrtc_connection.ice_candidate_created.connect(_webrtc_ice_candidate_created)
 
+	print("Initializing WebRTC join...")
 	webrtc_peer.add_peer(webrtc_connection, 1)
 
 	if ui:
@@ -375,6 +377,8 @@ func webrtc_join():
 func _webrtc_offer_created(type: String, sdp: String):
 	local_sdp_type = type
 	local_sdp = sdp
+	print("WebRTC session description created: ", type)
+	print("Waiting for ICE candidates...")
 	webrtc_connection.set_local_description(type, sdp)
 	call_deferred("_update_webrtc_output")
 
@@ -388,7 +392,8 @@ func _update_webrtc_output():
 	if local_sdp_type == "":
 		return
 
-	var timer = get_tree().create_timer(1.0)
+	print("Waiting 3 seconds for ICE candidates to gather...")
+	var timer = get_tree().create_timer(3.0)
 	await timer.timeout
 
 	if not webrtc_connection:
@@ -410,6 +415,7 @@ func _update_webrtc_output():
 			ui.update_webrtc_text(encoded_str)
 
 func webrtc_confirm(encoded_str: String):
+	print("Parsing WebRTC connection string...")
 	if not is_webrtc or not webrtc_connection:
 		print("WebRTC not initialized")
 		return
@@ -434,12 +440,17 @@ func webrtc_confirm(encoded_str: String):
 		return
 
 	if data.has("type") and data.has("sdp"):
+		print("Applying remote WebRTC description (", data["type"], ")...")
 		webrtc_connection.set_remote_description(data["type"], data["sdp"])
 
 		# If we are client joining, and we just got the offer, it automatically creates an answer
 		if not is_server and data["type"] == "offer":
 			webrtc_candidates.clear() # Clear any old ones
+			print("Creating WebRTC answer...")
+			webrtc_connection.create_answer()
 
 	if data.has("candidates"):
+		print("Adding ICE candidates to remote connection...")
+		print("Adding ", data["candidates"].size(), " ICE candidates...")
 		for cand in data["candidates"]:
 			webrtc_connection.add_ice_candidate(cand["media"], cand["index"], cand["name"])

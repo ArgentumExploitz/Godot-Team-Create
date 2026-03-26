@@ -548,7 +548,7 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 @rpc("any_peer", "reliable")
 func receive_scene(path: String, bytes: PackedByteArray):
 	# Validate path to prevent directory traversal
-	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot"):
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
 		printerr("Team Create: Unauthorized scene access: ", path)
 		return
 	if not path.begins_with("res://") or ".." in path:

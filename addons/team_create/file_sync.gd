@@ -53,7 +53,7 @@ func sync_all_files_to_peer(id: int):
 				file_hashes[path] = FileAccess.get_md5(path)
 		rpc_id(id, "compare_and_sync_files", file_hashes)
 
-func get_all_files(dir_path: String, exclude_dirs: Array = ["res://.godot"]) -> Array:
+func get_all_files(dir_path: String, exclude_dirs: Array = ["res://.godot", "res://webrtc"]) -> Array:
 	var files = []
 	var dir = DirAccess.open(dir_path)
 	if dir:
@@ -150,7 +150,7 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 @rpc("any_peer", "reliable")
 func request_file(path: String):
 	# Validate path to prevent directory traversal / arbitrary file read
-	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot"):
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
 		printerr("Team Create: Unauthorized file access: ", path)
 		return
 	if not path.begins_with("res://") or ".." in path:
@@ -165,7 +165,7 @@ func request_file(path: String):
 @rpc("any_peer", "reliable")
 func receive_file(path: String, bytes: PackedByteArray):
 	# Validate path to prevent directory traversal
-	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot"):
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
 		printerr("Team Create: Unauthorized file access: ", path)
 		return
 	if not path.begins_with("res://") or ".." in path:
