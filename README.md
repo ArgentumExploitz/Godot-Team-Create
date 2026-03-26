@@ -4,6 +4,11 @@
 <p align="center">
 <img width="541" height="423" alt="godoteam" src="https://github.com/user-attachments/assets/c8948365-a274-429e-ab95-fb524476dfa1" />
 </p>
+<p align="right">
+-Artwork by: cosogamer97
+</p>
+
+
 
 > [!WARNING]
 > This plugin is super early and highly unstable. It will probably crash and might even corrupt/wipe your scene files. Seriously, do not use this for your actual project yet!
