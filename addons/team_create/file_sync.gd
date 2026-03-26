@@ -5,7 +5,39 @@ var network: Node
 var _is_syncing_files = false
 var _scan_timer: SceneTreeTimer
 var _pending_files_to_receive = 0
+var downloading_files: Array = []
+var _sync_blocker: ColorRect
 signal sync_completed
+
+
+func _show_sync_blocker():
+	if not _sync_blocker and network and network.plugin:
+		var editor = network.plugin.get_editor_interface()
+		var base = editor.get_base_control()
+		_sync_blocker = ColorRect.new()
+		_sync_blocker.color = Color(0, 0, 0, 0.5)
+		_sync_blocker.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+		var label = Label.new()
+		label.name = "SyncLabel"
+		label.text = "Syncing Files... (0 remaining)"
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_sync_blocker.add_child(label)
+
+		base.add_child(_sync_blocker)
+
+func _update_sync_blocker():
+	if _sync_blocker:
+		var label = _sync_blocker.get_node_or_null("SyncLabel")
+		if label:
+			label.text = "Syncing Files... (" + str(_pending_files_to_receive) + " remaining)"
+
+func _hide_sync_blocker():
+	if _sync_blocker:
+		_sync_blocker.queue_free()
+		_sync_blocker = null
 
 func _ready():
 	call_deferred("_setup_fs_signals")
@@ -138,6 +170,12 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 	)
 
 	_pending_files_to_receive = files_to_request.size()
+	downloading_files.clear()
+	downloading_files.append_array(files_to_request)
+
+	if _pending_files_to_receive > 0:
+		call_deferred("_show_sync_blocker")
+		call_deferred("_update_sync_blocker")
 
 	for path in files_to_request:
 		rpc_id(sender_id, "request_file", path)
@@ -196,9 +234,12 @@ func receive_file(path: String, bytes: PackedByteArray):
 				if is_instance_valid(network) and network.scene_sync:
 					network.scene_sync._is_reloading_scene = false
 			)
+			downloading_files.erase(path)
 			if _pending_files_to_receive > 0:
 				_pending_files_to_receive -= 1
+				call_deferred("_update_sync_blocker")
 				if _pending_files_to_receive <= 0:
+					call_deferred("_hide_sync_blocker")
 					sync_completed.emit()
 			return
 		elif path in open_scenes:
@@ -233,7 +274,10 @@ func receive_file(path: String, bytes: PackedByteArray):
 						network.plugin.get_editor_interface().get_resource_filesystem().scan()
 				)
 
+		downloading_files.erase(path)
 		if _pending_files_to_receive > 0:
 			_pending_files_to_receive -= 1
+			call_deferred("_update_sync_blocker")
 			if _pending_files_to_receive <= 0:
+				call_deferred("_hide_sync_blocker")
 				sync_completed.emit()
