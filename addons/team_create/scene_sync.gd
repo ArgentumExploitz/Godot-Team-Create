@@ -85,6 +85,8 @@ func _process(delta):
 	# Process pending resource properties (waiting for file sync)
 	for i in range(_pending_resource_properties.size() - 1, -1, -1):
 		var pending = _pending_resource_properties[i]
+		if network and network.file_sync and pending.value in network.file_sync.downloading_files:
+			continue
 		if ResourceLoader.exists(pending.value):
 			var editor = network.plugin.get_editor_interface()
 			var current_scene = editor.get_edited_scene_root()
@@ -222,12 +224,12 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 				outline.set_meta("team_create_outline_peer", peer_id)
 				outline.color = color
 				outline.color.a = 0.5
-				outline.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 0)
 
 				if node is Node2D:
 					outline.size = Vector2(50, 50)
 					outline.position = Vector2(-25, -25)
 				else: # Control
+					outline.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 0)
 					outline.size = node.size
 
 				# Ensure it doesn't block mouse
@@ -527,7 +529,8 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 					return
 
 				# It's a resource path
-				if ResourceLoader.exists(value):
+				var is_downloading = network and network.file_sync and value in network.file_sync.downloading_files
+				if not is_downloading and ResourceLoader.exists(value):
 					var res = load(value)
 					if res:
 						node.set(prop_name, res)

@@ -68,6 +68,8 @@ func disconnect_peer():
 	peers.clear()
 	if ui:
 		ui.set_disconnected()
+	if file_sync:
+		file_sync._hide_sync_blocker()
 	print("Disconnected")
 
 func _add_peer(id: int):
