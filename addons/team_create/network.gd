@@ -415,10 +415,9 @@ func webrtc_confirm(json_str: String):
 	if data.has("type") and data.has("sdp"):
 		webrtc_connection.set_remote_description(data["type"], data["sdp"])
 
-		# If we are client joining, and we just got the offer, create answer
+		# If we are client joining, and we just got the offer, it automatically creates an answer
 		if not is_server and data["type"] == "offer":
 			webrtc_candidates.clear() # Clear any old ones
-			webrtc_connection.create_answer()
 
 	if data.has("candidates"):
 		for cand in data["candidates"]:
