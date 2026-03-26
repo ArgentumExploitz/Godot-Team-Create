@@ -116,7 +116,7 @@ func _init() -> void:
 	webrtc_text.custom_minimum_size = Vector2(0, 100)
 	webrtc_text.placeholder_text = "Paste WebRTC connection data here..."
 	webrtc_text.tooltip_text = "Copy/paste connection strings here to establish WebRTC peer connections."
-	webrtc_text.wrap_mode = TextEdit.LINE_WRAP_BOUNDARY
+	webrtc_text.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 	vbox.add_child(webrtc_text)
 
 	webrtc_confirm_btn = Button.new()
@@ -255,6 +255,11 @@ func enable_webrtc_confirm() -> void:
 	if webrtc_confirm_btn:
 		webrtc_confirm_btn.disabled = false
 		webrtc_confirm_btn.text = "Confirm Connection Data"
+
+
+func update_webrtc_instructions(text: String) -> void:
+	if webrtc_instructions:
+		webrtc_instructions.text = text
 
 func update_webrtc_text(text: String) -> void:
 	if webrtc_text:
