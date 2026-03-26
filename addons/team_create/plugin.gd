@@ -99,7 +99,7 @@ func download_update() -> void:
 	http_request.request_completed.connect(self._download_request_completed.bind(http_request))
 	# Using raw GitHub repo download link
 	var headers = ["User-Agent: Godot-Team-Create-Plugin"]
-	var error = http_request.request("https://github.com/ArgentumExploitz/Godot-Team-Create/archive/refs/heads/main.zip", headers)
+	var error = http_request.request("https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip", headers)
 	if error != OK:
 		print("An error occurred in the HTTP download request.")
 		downloading = false
