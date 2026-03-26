@@ -54,7 +54,7 @@ func check_for_updates() -> void:
 	http_request.request_completed.connect(self._http_request_completed.bind(http_request))
 	var headers = ["User-Agent: Godot-Team-Create-Plugin", "Cache-Control: no-cache"]
 	var timestamp = str(Time.get_unix_time_from_system())
-	var error = http_request.request("https://raw.githubusercontent.com/N3rmis/Godot-Team-Create/main/addons/team_create/plugin.cfg, headers)
+	var error = http_request.request("https://raw.githubusercontent.com/N3rmis/Godot-Team-Create/main/addons/team_create/plugin.cfg", headers)
 	if error != OK:
 		print("An error occurred in the HTTP request.")
 
