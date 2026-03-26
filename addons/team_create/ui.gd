@@ -31,6 +31,7 @@ func _init() -> void:
 	# Status Label
 	status_label = Label.new()
 	status_label.text = "Status: Disconnected"
+	status_label.add_theme_color_override("font_color", Color.GRAY)
 	vbox.add_child(status_label)
 
 	# Users Label
@@ -42,11 +43,18 @@ func _init() -> void:
 
 	vbox.add_child(HSeparator.new())
 
+	# LAN Section Header
+	var lan_label = Label.new()
+	lan_label.text = "LAN Connection"
+	lan_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	vbox.add_child(lan_label)
+
 	# IP Edit
 	ip_edit = LineEdit.new()
 	ip_edit.text = "127.0.0.1"
 	ip_edit.placeholder_text = "Host IP Address (e.g., 127.0.0.1)"
 	ip_edit.tooltip_text = "Enter the IP address of the host you want to join over LAN."
+	ip_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_child(ip_edit)
 
 	# HBox for Host and Join buttons
@@ -57,6 +65,7 @@ func _init() -> void:
 	host_btn.text = "Host"
 	host_btn.tooltip_text = "Start a new LAN server on port 12345."
 	host_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	host_btn.pressed.connect(_on_host_pressed)
 	hbox.add_child(host_btn)
 
@@ -64,8 +73,17 @@ func _init() -> void:
 	join_btn.text = "Join"
 	join_btn.tooltip_text = "Join an existing LAN server using the IP above."
 	join_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	join_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	join_btn.pressed.connect(_on_join_pressed)
 	hbox.add_child(join_btn)
+
+	vbox.add_child(HSeparator.new())
+
+	# WebRTC Section Header
+	var webrtc_label = Label.new()
+	webrtc_label.text = "WebRTC Connection"
+	webrtc_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	vbox.add_child(webrtc_label)
 
 	# WebRTC UI
 	var webrtc_hbox = HBoxContainer.new()
@@ -75,6 +93,7 @@ func _init() -> void:
 	webrtc_host_btn.text = "Host WebRTC"
 	webrtc_host_btn.tooltip_text = "Start a WebRTC session and generate a connection offer."
 	webrtc_host_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	webrtc_host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	webrtc_host_btn.pressed.connect(_on_webrtc_host_pressed)
 	webrtc_hbox.add_child(webrtc_host_btn)
 
@@ -82,6 +101,7 @@ func _init() -> void:
 	webrtc_join_btn.text = "Join WebRTC"
 	webrtc_join_btn.tooltip_text = "Join a WebRTC session and paste the host's offer below."
 	webrtc_join_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	webrtc_join_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	webrtc_join_btn.pressed.connect(_on_webrtc_join_pressed)
 	webrtc_hbox.add_child(webrtc_join_btn)
 
@@ -160,8 +180,10 @@ func set_connected(is_host: bool) -> void:
 
 	if is_host:
 		status_label.text = "Status: Peer Host Connected"
+		status_label.add_theme_color_override("font_color", Color.GREEN)
 	else:
 		status_label.text = "Status: Peer Client Connected"
+		status_label.add_theme_color_override("font_color", Color.GREEN)
 
 func set_disconnected() -> void:
 	host_btn.disabled = false
@@ -176,6 +198,7 @@ func set_disconnected() -> void:
 	sync_files_btn.disabled = true
 
 	status_label.text = "Status: Disconnected"
+	status_label.add_theme_color_override("font_color", Color.GRAY)
 	users_label.text = "Users: 1"
 
 func update_users_count(count: int) -> void:
