@@ -288,13 +288,21 @@ func webrtc_host():
 	webrtc_candidates.clear()
 
 	webrtc_connection = WebRTCPeerConnection.new()
+
+	# Check if the native extension is actually loaded. If not, Godot creates the base extension wrapper.
+	if webrtc_connection.get_class() == "WebRTCPeerConnectionExtension":
+		print("WebRTC plugin missing or not loaded. Starting download...")
+		webrtc_connection = null
+		disconnect_peer()
+		_download_webrtc()
+		return
+
 	var err = webrtc_connection.initialize({
 		"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
 	})
 
 	if err != OK:
-		print("WebRTC plugin missing. Starting download...")
-		_download_webrtc()
+		print("Failed to initialize WebRTC connection.")
 		webrtc_connection = null
 		disconnect_peer()
 		return
@@ -317,13 +325,21 @@ func webrtc_join():
 	webrtc_candidates.clear()
 
 	webrtc_connection = WebRTCPeerConnection.new()
+
+	# Check if the native extension is actually loaded. If not, Godot creates the base extension wrapper.
+	if webrtc_connection.get_class() == "WebRTCPeerConnectionExtension":
+		print("WebRTC plugin missing or not loaded. Starting download...")
+		webrtc_connection = null
+		disconnect_peer()
+		_download_webrtc()
+		return
+
 	var err = webrtc_connection.initialize({
 		"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
 	})
 
 	if err != OK:
-		print("WebRTC plugin missing. Starting download...")
-		_download_webrtc()
+		print("Failed to initialize WebRTC connection.")
 		webrtc_connection = null
 		disconnect_peer()
 		return
