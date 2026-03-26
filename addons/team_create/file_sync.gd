@@ -91,6 +91,9 @@ func get_all_files(dir_path: String, exclude_dirs: Array = ["res://.godot"]) -> 
 
 @rpc("any_peer", "reliable")
 func receive_project_settings(bytes: PackedByteArray):
+	if multiplayer.get_remote_sender_id() != 1:
+		printerr("Unauthorized settings sync attempt")
+		return
 	var file = FileAccess.open("res://project.godot", FileAccess.WRITE)
 	if file:
 		file.store_buffer(bytes)
@@ -147,6 +150,9 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 @rpc("any_peer", "reliable")
 func request_file(path: String):
 	# Validate path to prevent directory traversal / arbitrary file read
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot"):
+		printerr("Team Create: Unauthorized file access: ", path)
+		return
 	if not path.begins_with("res://") or ".." in path:
 		printerr("Invalid file path requested: ", path)
 		return
@@ -159,6 +165,9 @@ func request_file(path: String):
 @rpc("any_peer", "reliable")
 func receive_file(path: String, bytes: PackedByteArray):
 	# Validate path to prevent directory traversal
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot"):
+		printerr("Team Create: Unauthorized file access: ", path)
+		return
 	if not path.begins_with("res://") or ".." in path:
 		printerr("Invalid file path received: ", path)
 		return

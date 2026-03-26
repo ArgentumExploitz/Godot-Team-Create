@@ -509,6 +509,10 @@ func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: St
 
 @rpc("any_peer", "reliable")
 func update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
+	# Block scripts and metadata updates for security
+	if prop_name == "script" or prop_name.begins_with("metadata/"):
+		printerr("Team Create: Blocked unsafe property sync: ", prop_name)
+		return
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
 	if current_scene:
@@ -544,6 +548,9 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 @rpc("any_peer", "reliable")
 func receive_scene(path: String, bytes: PackedByteArray):
 	# Validate path to prevent directory traversal
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot"):
+		printerr("Team Create: Unauthorized scene access: ", path)
+		return
 	if not path.begins_with("res://") or ".." in path:
 		printerr("Invalid scene path received: ", path)
 		return
