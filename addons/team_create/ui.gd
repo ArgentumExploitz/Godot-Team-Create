@@ -14,6 +14,7 @@ var disconnect_btn: Button
 # WebRTC UI
 var webrtc_host_btn: Button
 var webrtc_join_btn: Button
+var webrtc_instructions: Label
 var webrtc_text: TextEdit
 var webrtc_confirm_btn: Button
 var push_scene_btn: Button
@@ -115,6 +116,7 @@ func _init() -> void:
 	webrtc_text.custom_minimum_size = Vector2(0, 100)
 	webrtc_text.placeholder_text = "Paste WebRTC connection data here..."
 	webrtc_text.tooltip_text = "Copy/paste connection strings here to establish WebRTC peer connections."
+	webrtc_text.wrap_mode = TextEdit.LINE_WRAP_BOUNDARY
 	vbox.add_child(webrtc_text)
 
 	webrtc_confirm_btn = Button.new()
@@ -202,6 +204,9 @@ func set_disconnected() -> void:
 	push_scene_btn.disabled = true
 	sync_settings_btn.disabled = true
 	sync_files_btn.disabled = true
+
+	update_webrtc_instructions("Click 'Host WebRTC' or 'Join WebRTC' to start.")
+	update_webrtc_text("")
 
 	status_label.text = "Status: Disconnected"
 	status_label.add_theme_color_override("font_color", Color.GRAY)
