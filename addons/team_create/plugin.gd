@@ -9,12 +9,18 @@ func _enter_tree() -> void:
 
 	# Load UI script and instantiate it.
 	# We're building the UI dynamically to ensure stability and match the screenshot.
-	var ui_script = preload("res://addons/team_create/ui.gd")
+	var ui_script = load("res://addons/team_create/ui.gd")
+	var network_script = load("res://addons/team_create/network.gd")
+
+	if ui_script == null or network_script == null:
+		printerr("Team Create failed to load core scripts! Attempting fallback update...")
+		download_update()
+		return
+
 	dock = ui_script.new()
 	add_control_to_dock(DOCK_SLOT_LEFT_UR, dock)
 
 	# Load network manager script and instantiate it as a child.
-	var network_script = preload("res://addons/team_create/network.gd")
 	network = network_script.new()
 	network.name = "TeamCreateNetwork"
 	get_tree().root.add_child(network)
