@@ -212,17 +212,24 @@ func get_username(id: int) -> String:
 
 func webrtc_host():
 	webrtc_candidates.clear()
+
+	webrtc_connection = WebRTCPeerConnection.new()
+	var err = webrtc_connection.initialize({
+		"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+	})
+
+	if err != OK:
+		printerr("Failed to initialize WebRTC. Is the WebRTC plugin installed and enabled?")
+		webrtc_connection = null
+		disconnect_peer()
+		return
+
 	webrtc_peer = WebRTCMultiplayerPeer.new()
 	webrtc_peer.create_server()
 	multiplayer.multiplayer_peer = webrtc_peer
 	is_server = true
 	is_webrtc = true
 	_add_peer(1)
-
-	webrtc_connection = WebRTCPeerConnection.new()
-	webrtc_connection.initialize({
-		"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-	})
 
 	webrtc_connection.session_description_created.connect(_webrtc_offer_created)
 	webrtc_connection.ice_candidate_created.connect(_webrtc_ice_candidate_created)
@@ -233,17 +240,24 @@ func webrtc_host():
 
 func webrtc_join():
 	webrtc_candidates.clear()
+
+	webrtc_connection = WebRTCPeerConnection.new()
+	var err = webrtc_connection.initialize({
+		"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+	})
+
+	if err != OK:
+		printerr("Failed to initialize WebRTC. Is the WebRTC plugin installed and enabled?")
+		webrtc_connection = null
+		disconnect_peer()
+		return
+
 	webrtc_peer = WebRTCMultiplayerPeer.new()
 	webrtc_peer.create_client(2)
 	multiplayer.multiplayer_peer = webrtc_peer
 	is_server = false
 	is_webrtc = true
 	_add_peer(multiplayer.get_unique_id())
-
-	webrtc_connection = WebRTCPeerConnection.new()
-	webrtc_connection.initialize({
-		"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-	})
 
 	webrtc_connection.session_description_created.connect(_webrtc_offer_created)
 	webrtc_connection.ice_candidate_created.connect(_webrtc_ice_candidate_created)
