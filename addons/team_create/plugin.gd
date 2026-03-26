@@ -93,6 +93,12 @@ func _prompt_update() -> void:
 		dock.update_btn.text = "Update Available!"
 		dock.update_btn.add_theme_color_override("font_color", Color.GREEN)
 
+func _reset_update_button() -> void:
+	downloading = false
+	if dock and dock.update_btn:
+		dock.update_btn.text = "Update Failed. Retry?"
+		dock.update_btn.add_theme_color_override("font_color", Color.RED)
+
 func download_update() -> void:
 	if downloading:
 		return
@@ -103,27 +109,20 @@ func download_update() -> void:
 	var http_request = HTTPRequest.new()
 	add_child(http_request)
 	http_request.request_completed.connect(self._download_request_completed.bind(http_request))
+	http_request.download_file = "user://team_create_update.zip"
 	# Using raw GitHub repo download link
 	var headers = ["User-Agent: Godot-Team-Create-Plugin"]
 	var error = http_request.request("https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip", headers)
 	if error != OK:
 		print("An error occurred in the HTTP download request.")
-		downloading = false
+		_reset_update_button()
 
 func _download_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest) -> void:
 	if result == HTTPRequest.RESULT_SUCCESS and (response_code == 200 or response_code == 301 or response_code == 302):
-		# Write to temp file
-		var file = FileAccess.open("user://team_create_update.zip", FileAccess.WRITE)
-		if file:
-			file.store_buffer(body)
-			file.close()
-			_extract_and_apply_update("user://team_create_update.zip")
-		else:
-			print("Failed to save update zip file.")
-			downloading = false
+		_extract_and_apply_update("user://team_create_update.zip")
 	else:
 		print("Failed to download update. Response code: " + str(response_code))
-		downloading = false
+		_reset_update_button()
 
 	http_request.queue_free()
 
@@ -133,7 +132,7 @@ func _extract_and_apply_update(zip_path: String) -> void:
 	var err = zip_reader.open(zip_path)
 	if err != OK:
 		print("Failed to open update zip.")
-		downloading = false
+		_reset_update_button()
 		return
 
 	var files = zip_reader.get_files()
