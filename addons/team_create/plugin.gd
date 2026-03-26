@@ -52,39 +52,28 @@ func check_for_updates() -> void:
 	# We also need to delay the request slightly if the plugin just loaded.
 
 	http_request.request_completed.connect(self._http_request_completed.bind(http_request))
-	# Using raw API to bypass raw.githubusercontent caching and issues
-	var headers = ["User-Agent: Godot-Team-Create-Plugin"]
-	var error = http_request.request("https://api.github.com/repos/N3rmis/Godot-Team-Create/contents/addons/team_create/plugin.cfg", headers)
+	var headers = ["User-Agent: Godot-Team-Create-Plugin", "Cache-Control: no-cache"]
+	var timestamp = str(Time.get_unix_time_from_system())
+	var error = http_request.request("https://raw.githubusercontent.com/N3rmis/Godot-Team-Create/main/addons/team_create/plugin.cfg?t=" + timestamp, headers)
 	if error != OK:
 		print("An error occurred in the HTTP request.")
 
 func _http_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest) -> void:
 	if result == HTTPRequest.RESULT_SUCCESS and response_code == 200:
-		var json = JSON.new()
-		var error = json.parse(body.get_string_from_utf8())
-		if error != OK:
-			print("Failed to parse GitHub API response.")
-			http_request.queue_free()
-			return
+		var content = body.get_string_from_utf8()
+		var lines = content.split("\n")
+		var latest_version = ""
+		for line in lines:
+			if line.begins_with("version="):
+				latest_version = line.split("=")[1].replace("\"", "").strip_edges()
+				break
 
-		var data = json.get_data()
-		if typeof(data) == TYPE_DICTIONARY and data.has("content") and data.has("encoding") and data["encoding"] == "base64":
-			var content = Marshalls.base64_to_utf8(data["content"])
-			var lines = content.split("\n")
-			var latest_version = ""
-			for line in lines:
-				if line.begins_with("version="):
-					latest_version = line.split("=")[1].replace("\"", "").strip_edges()
-					break
-
-			var current_version = get_current_version()
-			if latest_version != "" and latest_version != current_version:
-				print("Team Create update available: " + latest_version + " (Current: " + current_version + ")")
-				_prompt_update()
-			else:
-				print("Team Create is up to date.")
+		var current_version = get_current_version()
+		if latest_version != "" and latest_version != current_version:
+			print("Team Create update available: " + latest_version + " (Current: " + current_version + ")")
+			_prompt_update()
 		else:
-			print("Failed to check for updates: Invalid content.")
+			print("Team Create is up to date.")
 	else:
 		print("Failed to check for updates. Result: " + str(result) + ", Code: " + str(response_code))
 
