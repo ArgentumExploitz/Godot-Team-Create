@@ -11,9 +11,11 @@
 Basically, this is a Godot 4.* plugin that lets you and your friends jump into the same editor and build the game together in real-time. 
 
 ## What it actually does
-- Syncs the scene so everyone is looking at the same stuff.
-- Lets you all mess with nodes at the exact same time.
-- Built specifically for Godot 4.*.
+- Connect up over LAN or straight through WebRTC.
+- Automatically syncs project files and scenes so everyone is looking at the exact same stuff.
+- Fair warning: as a side effect of how the sync works, some temporary files instantly become real assets now. 
+- Tells you right in the editor when I push an update to the GitHub repo so you aren't running an ancient version.
+- WIP user visuals: right now you can just see a selection box where your friends are clicking. Later on, I'm planning to add floating orbs with usernames for 3D scenes and actual cursors for 2D.
 
 ## What you need
 - Godot 4.0 or newer.
