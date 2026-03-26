@@ -24,9 +24,14 @@ var update_btn: Button
 func _init() -> void:
 	name = "LAN Sync"
 
+	var scroll = ScrollContainer.new()
+	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 5)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	add_child(scroll)
+
 	var vbox = VBoxContainer.new()
-	vbox.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 5)
-	add_child(vbox)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
 
 	# Status Label
 	status_label = Label.new()
@@ -38,7 +43,8 @@ func _init() -> void:
 	users_label = RichTextLabel.new()
 	users_label.bbcode_enabled = true
 	users_label.text = "Users: 1"
-	users_label.custom_minimum_size = Vector2(0, 150)
+	users_label.fit_content = true
+	users_label.scroll_active = false
 	vbox.add_child(users_label)
 
 	vbox.add_child(HSeparator.new())
