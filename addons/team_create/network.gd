@@ -357,7 +357,7 @@ func webrtc_join():
 	webrtc_peer.add_peer(webrtc_connection, 1)
 
 	if ui:
-		ui.update_webrtc_text("Paste Host Offer JSON here, then click Confirm")
+		ui.update_webrtc_text("Paste Host Offer connection string here, then click Confirm")
 
 func _webrtc_offer_created(type: String, sdp: String):
 	local_sdp_type = type
@@ -387,10 +387,11 @@ func _update_webrtc_output():
 		"candidates": webrtc_candidates
 	}
 	var json = JSON.stringify(dict)
+	var encoded_str = Marshalls.utf8_to_base64(json)
 	if ui:
-		ui.update_webrtc_text(json)
+		ui.update_webrtc_text(encoded_str)
 
-func webrtc_confirm(json_str: String):
+func webrtc_confirm(encoded_str: String):
 	if not is_webrtc or not webrtc_connection:
 		print("WebRTC not initialized")
 		return
@@ -398,8 +399,10 @@ func webrtc_confirm(json_str: String):
 	if ui:
 		ui.disable_webrtc_confirm()
 
+	var decoded_json_str = Marshalls.base64_to_utf8(encoded_str.strip_edges())
+
 	var json = JSON.new()
-	if json.parse(json_str) != OK:
+	if json.parse(decoded_json_str) != OK:
 		print("Failed to parse JSON")
 		if ui:
 			ui.enable_webrtc_confirm()
