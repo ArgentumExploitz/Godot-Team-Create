@@ -54,7 +54,7 @@ func check_for_updates() -> void:
 	http_request.request_completed.connect(self._http_request_completed.bind(http_request))
 	# Using raw API to bypass raw.githubusercontent caching and issues
 	var headers = ["User-Agent: Godot-Team-Create-Plugin"]
-	var error = http_request.request("https://api.github.com/repos/ArgentumExploitz/Godot-Team-Create/contents/addons/team_create/plugin.cfg", headers)
+	var error = http_request.request("https://api.github.com/repos/N3rmis/Godot-Team-Create/contents/addons/team_create/plugin.cfg", headers)
 	if error != OK:
 		print("An error occurred in the HTTP request.")
 
