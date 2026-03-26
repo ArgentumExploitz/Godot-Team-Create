@@ -190,6 +190,14 @@ static func get_node_by_unique_id(root: Node, id: String) -> Node:
 		return root.get_node(id)
 	return null
 
+func _process(_delta: float) -> void:
+	if is_webrtc:
+		if webrtc_connection:
+			webrtc_connection.poll()
+		if webrtc_peer:
+			webrtc_peer.poll()
+
+
 func _get_default_peer_info(id: int) -> Dictionary:
 	var rng = RandomNumberGenerator.new()
 	rng.seed = id
@@ -321,6 +329,10 @@ func webrtc_host():
 
 	webrtc_connection.create_offer()
 
+	if ui:
+		ui.update_webrtc_instructions("Generating host offer...")
+		ui.update_webrtc_text("")
+
 func webrtc_join():
 	webrtc_candidates.clear()
 
@@ -357,7 +369,8 @@ func webrtc_join():
 	webrtc_peer.add_peer(webrtc_connection, 1)
 
 	if ui:
-		ui.update_webrtc_text("Paste Host Offer connection string here, then click Confirm")
+		ui.update_webrtc_instructions("Step 1: Paste Host Offer connection string below, then click Confirm.")
+		ui.update_webrtc_text("")
 
 func _webrtc_offer_created(type: String, sdp: String):
 	local_sdp_type = type
@@ -389,7 +402,12 @@ func _update_webrtc_output():
 	var json = JSON.stringify(dict)
 	var encoded_str = Marshalls.utf8_to_base64(json)
 	if ui:
-		ui.update_webrtc_text(encoded_str)
+		if is_server:
+			ui.update_webrtc_instructions("Step 1: Copy this string and send it to your friend.\nStep 2: Wait for them to send their answer back.\nStep 3: Paste their answer below and click Confirm.")
+			ui.update_webrtc_text(encoded_str)
+		else:
+			ui.update_webrtc_instructions("Step 2: Copy this string and send it back to the host.")
+			ui.update_webrtc_text(encoded_str)
 
 func webrtc_confirm(encoded_str: String):
 	if not is_webrtc or not webrtc_connection:
