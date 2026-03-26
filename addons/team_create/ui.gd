@@ -21,6 +21,7 @@ var push_scene_btn: Button
 var sync_settings_btn: Button
 var sync_files_btn: Button
 var update_btn: Button
+var webrtc_mode: int = 0
 
 func _init() -> void:
 	name = "LAN Sync"
@@ -181,6 +182,9 @@ func set_connected(is_host: bool) -> void:
 	webrtc_host_btn.disabled = true
 	webrtc_join_btn.disabled = true
 	webrtc_confirm_btn.disabled = true
+	webrtc_host_btn.text = "Host WebRTC"
+	webrtc_join_btn.text = "Join WebRTC"
+	webrtc_mode = 0
 	disconnect_btn.disabled = false
 	push_scene_btn.disabled = false
 	sync_settings_btn.disabled = false
@@ -200,6 +204,9 @@ func set_disconnected() -> void:
 	webrtc_join_btn.disabled = false
 	webrtc_confirm_btn.disabled = false
 	webrtc_confirm_btn.text = "Confirm Connection Data"
+	webrtc_host_btn.text = "Host WebRTC"
+	webrtc_join_btn.text = "Join WebRTC"
+	webrtc_mode = 0
 	disconnect_btn.disabled = true
 	push_scene_btn.disabled = true
 	sync_settings_btn.disabled = true
@@ -236,11 +243,25 @@ func _on_join_pressed() -> void:
 
 func _on_webrtc_host_pressed() -> void:
 	if network:
-		network.webrtc_host()
+		if webrtc_mode == 1:
+			network.disconnect_peer()
+		else:
+			webrtc_mode = 1
+			webrtc_join_btn.disabled = true
+			webrtc_host_btn.text = "Cancel"
+			disconnect_btn.disabled = false
+			network.webrtc_host()
 
 func _on_webrtc_join_pressed() -> void:
 	if network:
-		network.webrtc_join()
+		if webrtc_mode == 2:
+			network.disconnect_peer()
+		else:
+			webrtc_mode = 2
+			webrtc_host_btn.disabled = true
+			webrtc_join_btn.text = "Cancel"
+			disconnect_btn.disabled = false
+			network.webrtc_join()
 
 func _on_webrtc_confirm_pressed() -> void:
 	if network:
@@ -250,6 +271,7 @@ func disable_webrtc_confirm() -> void:
 	if webrtc_confirm_btn:
 		webrtc_confirm_btn.disabled = true
 		webrtc_confirm_btn.text = "Confirming..."
+	update_webrtc_instructions("Processing connection data... Waiting for peer connection.")
 
 func enable_webrtc_confirm() -> void:
 	if webrtc_confirm_btn:

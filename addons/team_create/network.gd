@@ -423,6 +423,7 @@ func webrtc_confirm(encoded_str: String):
 	if json.parse(decoded_json_str) != OK:
 		print("Failed to parse JSON")
 		if ui:
+			ui.update_webrtc_instructions("Error: Failed to parse connection data. Please make sure you copied the entire string correctly.")
 			ui.enable_webrtc_confirm()
 		return
 
@@ -430,6 +431,7 @@ func webrtc_confirm(encoded_str: String):
 	if typeof(data) != TYPE_DICTIONARY:
 		print("Invalid JSON data")
 		if ui:
+			ui.update_webrtc_instructions("Error: Invalid connection data format.")
 			ui.enable_webrtc_confirm()
 		return
 
