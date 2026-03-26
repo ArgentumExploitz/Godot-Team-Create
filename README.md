@@ -20,6 +20,7 @@ Basically, this is a Godot 4.* plugin that lets you and your friends jump into t
 ## What you need
 - Godot 4.0 or newer.
 - A decent internet connection between everyone.
+- OPTIONAL: Hosted server, LAN and WebRTC might not work for some!
 
 ## How to get it running
 1. Download the latest release.
