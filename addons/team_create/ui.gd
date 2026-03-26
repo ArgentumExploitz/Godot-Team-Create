@@ -10,6 +10,12 @@ var ip_edit: LineEdit
 var host_btn: Button
 var join_btn: Button
 var disconnect_btn: Button
+
+# WebRTC UI
+var webrtc_host_btn: Button
+var webrtc_join_btn: Button
+var webrtc_text: TextEdit
+var webrtc_confirm_btn: Button
 var push_scene_btn: Button
 var sync_settings_btn: Button
 var sync_files_btn: Button
@@ -53,6 +59,30 @@ func _init() -> void:
 	join_btn.pressed.connect(_on_join_pressed)
 	hbox.add_child(join_btn)
 
+	# WebRTC UI
+	var webrtc_hbox = HBoxContainer.new()
+	vbox.add_child(webrtc_hbox)
+
+	webrtc_host_btn = Button.new()
+	webrtc_host_btn.text = "Host WebRTC"
+	webrtc_host_btn.pressed.connect(_on_webrtc_host_pressed)
+	webrtc_hbox.add_child(webrtc_host_btn)
+
+	webrtc_join_btn = Button.new()
+	webrtc_join_btn.text = "Join WebRTC"
+	webrtc_join_btn.pressed.connect(_on_webrtc_join_pressed)
+	webrtc_hbox.add_child(webrtc_join_btn)
+
+	webrtc_text = TextEdit.new()
+	webrtc_text.custom_minimum_size = Vector2(0, 100)
+	webrtc_text.placeholder_text = "Paste WebRTC connection data here..."
+	vbox.add_child(webrtc_text)
+
+	webrtc_confirm_btn = Button.new()
+	webrtc_confirm_btn.text = "Confirm Connection Data"
+	webrtc_confirm_btn.pressed.connect(_on_webrtc_confirm_pressed)
+	vbox.add_child(webrtc_confirm_btn)
+
 	# Disconnect Button
 	disconnect_btn = Button.new()
 	disconnect_btn.text = "Disconnect"
@@ -90,6 +120,9 @@ func _ready() -> void:
 func set_connected(is_host: bool) -> void:
 	host_btn.disabled = true
 	join_btn.disabled = true
+	webrtc_host_btn.disabled = true
+	webrtc_join_btn.disabled = true
+	webrtc_confirm_btn.disabled = true
 	disconnect_btn.disabled = false
 	push_scene_btn.disabled = false
 	sync_settings_btn.disabled = false
@@ -103,6 +136,10 @@ func set_connected(is_host: bool) -> void:
 func set_disconnected() -> void:
 	host_btn.disabled = false
 	join_btn.disabled = false
+	webrtc_host_btn.disabled = false
+	webrtc_join_btn.disabled = false
+	webrtc_confirm_btn.disabled = false
+	webrtc_confirm_btn.text = "Confirm Connection Data"
 	disconnect_btn.disabled = true
 	push_scene_btn.disabled = true
 	sync_settings_btn.disabled = true
@@ -132,6 +169,32 @@ func _on_host_pressed() -> void:
 func _on_join_pressed() -> void:
 	if network:
 		network.join_server(ip_edit.text)
+
+func _on_webrtc_host_pressed() -> void:
+	if network:
+		network.webrtc_host()
+
+func _on_webrtc_join_pressed() -> void:
+	if network:
+		network.webrtc_join()
+
+func _on_webrtc_confirm_pressed() -> void:
+	if network:
+		network.webrtc_confirm(webrtc_text.text)
+
+func disable_webrtc_confirm() -> void:
+	if webrtc_confirm_btn:
+		webrtc_confirm_btn.disabled = true
+		webrtc_confirm_btn.text = "Confirming..."
+
+func enable_webrtc_confirm() -> void:
+	if webrtc_confirm_btn:
+		webrtc_confirm_btn.disabled = false
+		webrtc_confirm_btn.text = "Confirm Connection Data"
+
+func update_webrtc_text(text: String) -> void:
+	if webrtc_text:
+		webrtc_text.text = text
 
 func _on_disconnect_pressed() -> void:
 	if network:
