@@ -210,6 +210,80 @@ func get_username(id: int) -> String:
 		return peers[id]["username"]
 	return _get_default_peer_info(id)["username"]
 
+
+var downloading_webrtc = false
+
+func _download_webrtc():
+	if downloading_webrtc: return
+	downloading_webrtc = true
+	print("Downloading WebRTC extension...")
+	if ui:
+		ui.webrtc_host_btn.text = "Downloading..."
+		ui.webrtc_join_btn.text = "Downloading..."
+		ui.webrtc_host_btn.disabled = true
+		ui.webrtc_join_btn.disabled = true
+
+	var http_request = HTTPRequest.new()
+	add_child(http_request)
+	http_request.request_completed.connect(self._on_webrtc_download_completed.bind(http_request))
+	var error = http_request.request("https://github.com/godotengine/webrtc-native/releases/download/1.1.0-stable/godot-extension-webrtc.zip")
+	if error != OK:
+		print("Failed to start WebRTC download.")
+		downloading_webrtc = false
+
+func _on_webrtc_download_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest):
+	if result == HTTPRequest.RESULT_SUCCESS and (response_code == 200 or response_code == 301 or response_code == 302):
+		var file = FileAccess.open("user://webrtc_update.zip", FileAccess.WRITE)
+		if file:
+			file.store_buffer(body)
+			file.close()
+			_extract_webrtc("user://webrtc_update.zip")
+		else:
+			print("Failed to save WebRTC zip file.")
+			downloading_webrtc = false
+	else:
+		print("Failed to download WebRTC. Response code: " + str(response_code))
+		downloading_webrtc = false
+	http_request.queue_free()
+
+func _extract_webrtc(zip_path: String):
+	var zip_reader = ZIPReader.new()
+	var err = zip_reader.open(zip_path)
+	if err != OK:
+		print("Failed to open WebRTC zip.")
+		downloading_webrtc = false
+		return
+
+	var files = zip_reader.get_files()
+	for f in files:
+		if f.ends_with("/"):
+			continue
+
+		if ".." in f:
+			continue
+
+		var dest_path = "res://" + f
+		var dest_dir = dest_path.get_base_dir()
+		if not DirAccess.dir_exists_absolute(dest_dir):
+			DirAccess.make_dir_recursive_absolute(dest_dir)
+
+		var content = zip_reader.read_file(f)
+		var out_file = FileAccess.open(dest_path, FileAccess.WRITE)
+		if out_file:
+			out_file.store_buffer(content)
+			out_file.close()
+
+	zip_reader.close()
+	DirAccess.remove_absolute(zip_path)
+	print("WebRTC extension installed! Restarting editor...")
+	if ui:
+		ui.webrtc_host_btn.text = "Restarting..."
+		ui.webrtc_join_btn.text = "Restarting..."
+
+	if plugin:
+		var editor_interface = plugin.get_editor_interface()
+		editor_interface.restart_editor()
+
 func webrtc_host():
 	webrtc_candidates.clear()
 
@@ -219,7 +293,8 @@ func webrtc_host():
 	})
 
 	if err != OK:
-		printerr("Failed to initialize WebRTC. Is the WebRTC plugin installed and enabled?")
+		print("WebRTC plugin missing. Starting download...")
+		_download_webrtc()
 		webrtc_connection = null
 		disconnect_peer()
 		return
@@ -247,7 +322,8 @@ func webrtc_join():
 	})
 
 	if err != OK:
-		printerr("Failed to initialize WebRTC. Is the WebRTC plugin installed and enabled?")
+		print("WebRTC plugin missing. Starting download...")
+		_download_webrtc()
 		webrtc_connection = null
 		disconnect_peer()
 		return
