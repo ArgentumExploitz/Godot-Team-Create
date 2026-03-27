@@ -497,8 +497,8 @@ func webrtc_confirm(encoded_str: String):
 		# If we are client joining, and we just got the offer, it automatically creates an answer
 		if not is_server and data["type"] == "offer":
 			webrtc_candidates.clear() # Clear any old ones
-			print("Creating WebRTC answer...")
-			webrtc_connection.create_answer()
+
+
 
 	if data.has("candidates"):
 		print("Adding ICE candidates to remote connection...")
