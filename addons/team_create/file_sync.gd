@@ -197,8 +197,8 @@ func request_file(path: String):
 		return
 
 	# Send file back
-	var bytes = FileAccess.get_file_as_bytes(path)
-	if bytes:
+	if FileAccess.file_exists(path):
+		var bytes = FileAccess.get_file_as_bytes(path)
 		var sender_id = multiplayer.get_remote_sender_id()
 		var chunk_size = 60000
 		var total_size = bytes.size()
