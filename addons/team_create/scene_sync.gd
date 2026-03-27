@@ -408,6 +408,9 @@ func _on_node_removed(node: Node):
 	if _node_names.has(inst_id):
 		_node_names.erase(inst_id)
 
+	if id != "" and _last_tracked_properties.has(id):
+		_last_tracked_properties.erase(id)
+
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty() or id == "":
 		return
 
@@ -631,6 +634,7 @@ func request_scene_state(scene_path: String):
 				var bytes = FileAccess.get_file_as_bytes(temp_path)
 				if bytes:
 					rpc_id(sender_id, "receive_scene_state", scene_path, bytes)
+				DirAccess.remove_absolute(temp_path)
 
 @rpc("any_peer", "reliable")
 func receive_scene_state(path: String, bytes: PackedByteArray):

@@ -261,6 +261,7 @@ func _extract_webrtc(zip_path: String):
 	var err = zip_reader.open(zip_path)
 	if err != OK:
 		print("Failed to open WebRTC zip.")
+		DirAccess.remove_absolute(zip_path)
 		downloading_webrtc = false
 		return
 
@@ -285,6 +286,13 @@ func _extract_webrtc(zip_path: String):
 
 	zip_reader.close()
 	DirAccess.remove_absolute(zip_path)
+
+	# Prevent WebRTC folder from being built with the game
+	var ignore_file = FileAccess.open("res://webrtc/.gdignore", FileAccess.WRITE)
+	if ignore_file:
+		ignore_file.store_string("")
+		ignore_file.close()
+
 	print("WebRTC extension installed! Restarting editor...")
 	if ui:
 		ui.webrtc_host_btn.text = "Restarting..."
