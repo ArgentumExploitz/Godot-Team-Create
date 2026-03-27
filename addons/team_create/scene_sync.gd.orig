@@ -676,11 +676,10 @@ func receive_scene(path: String, bytes: PackedByteArray, is_final: bool = true):
 			if file:
 				file.store_buffer(bytes)
 				file.close()
-			_is_reloading_scene = true
-			_force_full_sync_next_frame = true
-
 			editor.reload_scene_from_path(path)
 			print("Team Create: Applying received scene to active view.")
+			_is_reloading_scene = true
+			_force_full_sync_next_frame = true
 
 			get_tree().create_timer(0.5).timeout.connect(func():
 				_is_reloading_scene = false
