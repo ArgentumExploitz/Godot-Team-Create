@@ -8,6 +8,7 @@ var _pending_files_to_receive = 0
 var downloading_files: Array = []
 var _sync_blocker: ColorRect
 var _receiving_files: Dictionary = {}
+var _known_files: Array = []
 signal sync_completed
 
 
@@ -56,6 +57,14 @@ func _on_filesystem_changed():
 
 	# Automatically sync files whenever Godot detects a local file system change.
 	sync_all_files()
+
+	# Check for local deletions and broadcast them
+	var current_files = get_all_files("res://")
+	for known_path in _known_files:
+		if not current_files.has(known_path):
+			rpc("remote_delete_file", known_path)
+
+	_known_files = current_files.duplicate()
 
 func sync_project_settings():
 	if multiplayer.is_server():
@@ -174,6 +183,8 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 	downloading_files.clear()
 	downloading_files.append_array(files_to_request)
 
+	_known_files = local_files.duplicate()
+
 	if _pending_files_to_receive > 0:
 		call_deferred("_show_sync_blocker")
 		call_deferred("_update_sync_blocker")
@@ -272,7 +283,10 @@ func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 				call_deferred("_update_sync_blocker")
 				if _pending_files_to_receive <= 0:
 					call_deferred("_hide_sync_blocker")
-					sync_completed.emit()
+					call_deferred("_hide_sync_blocker")
+				_known_files = get_all_files("res://")
+				sync_completed.emit()
+
 			return
 		elif path in open_scenes:
 			# Scene is open but NOT active ("closed" by the user's focus).
@@ -312,4 +326,24 @@ func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 			call_deferred("_update_sync_blocker")
 			if _pending_files_to_receive <= 0:
 				call_deferred("_hide_sync_blocker")
+				_known_files = get_all_files("res://")
 				sync_completed.emit()
+
+
+@rpc("any_peer", "reliable")
+func remote_delete_file(path: String):
+	if multiplayer.get_remote_sender_id() != 1:
+		return # Only server can dictate deletions for security
+
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
+		return
+	if not path.begins_with("res://") or ".." in path:
+		return
+
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(path)
+		print("Team Create: Replicated file deletion: ", path)
+
+		# Remove from known files
+		if _known_files.has(path):
+			_known_files.erase(path)
