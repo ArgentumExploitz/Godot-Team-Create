@@ -15,6 +15,8 @@ var _pre_removal_paths = {}
 var _node_names = {}
 var _force_full_sync_next_frame = false
 var _pending_resource_properties = []
+var _receiving_scenes: Dictionary = {}
+var _receiving_scene_states: Dictionary = {}
 
 func _ready():
 	var tree = Engine.get_main_loop() as SceneTree
@@ -254,7 +256,20 @@ func push_current_scene():
 			if path != "":
 				var bytes = FileAccess.get_file_as_bytes(path)
 				if bytes:
-					rpc("receive_scene", path, bytes)
+					var chunk_size = 60000
+					var total_size = bytes.size()
+					var offset = 0
+
+					if total_size == 0:
+						rpc("receive_scene", path, bytes, true)
+						return
+
+					while offset < total_size:
+						var end_idx = min(offset + chunk_size, total_size)
+						var chunk = bytes.slice(offset, end_idx)
+						var is_final = (end_idx == total_size)
+						rpc("receive_scene", path, chunk, is_final)
+						offset += chunk_size
 
 func push_current_scene_to_peer(id: int):
 	if multiplayer.is_server():
@@ -265,7 +280,20 @@ func push_current_scene_to_peer(id: int):
 			if path != "":
 				var bytes = FileAccess.get_file_as_bytes(path)
 				if bytes:
-					rpc_id(id, "receive_scene", path, bytes)
+					var chunk_size = 60000
+					var total_size = bytes.size()
+					var offset = 0
+
+					if total_size == 0:
+						rpc_id(id, "receive_scene", path, bytes, true)
+						return
+
+					while offset < total_size:
+						var end_idx = min(offset + chunk_size, total_size)
+						var chunk = bytes.slice(offset, end_idx)
+						var is_final = (end_idx == total_size)
+						rpc_id(id, "receive_scene", path, chunk, is_final)
+						offset += chunk_size
 
 func _on_node_added(node: Node):
 	# Connect for tracking before removal
@@ -548,7 +576,7 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 			_last_tracked_properties[id][prop_name] = value
 
 @rpc("any_peer", "reliable")
-func receive_scene(path: String, bytes: PackedByteArray):
+func receive_scene(path: String, bytes: PackedByteArray, is_final: bool = true):
 	# Validate path to prevent directory traversal
 	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
 		printerr("Team Create: Unauthorized scene access: ", path)
@@ -556,6 +584,20 @@ func receive_scene(path: String, bytes: PackedByteArray):
 	if not path.begins_with("res://") or ".." in path:
 		printerr("Invalid scene path received: ", path)
 		return
+
+	var sender_id = multiplayer.get_remote_sender_id()
+	var scene_key = str(sender_id) + "_" + path
+	if not _receiving_scenes.has(scene_key):
+		_receiving_scenes[scene_key] = PackedByteArray()
+
+	_receiving_scenes[scene_key].append_array(bytes)
+
+	if not is_final:
+		return
+
+	var full_bytes = _receiving_scenes[scene_key]
+	_receiving_scenes.erase(scene_key)
+	bytes = full_bytes
 
 	if network and network.plugin:
 		var editor = network.plugin.get_editor_interface()
@@ -625,17 +667,45 @@ func request_scene_state(scene_path: String):
 			if ResourceSaver.save(packed, temp_path) == OK:
 				var bytes = FileAccess.get_file_as_bytes(temp_path)
 				if bytes:
-					rpc_id(sender_id, "receive_scene_state", scene_path, bytes)
+					var chunk_size = 60000
+					var total_size = bytes.size()
+					var offset = 0
+
+					if total_size == 0:
+						rpc_id(sender_id, "receive_scene_state", scene_path, bytes, true)
+						DirAccess.remove_absolute(temp_path)
+						return
+
+					while offset < total_size:
+						var end_idx = min(offset + chunk_size, total_size)
+						var chunk = bytes.slice(offset, end_idx)
+						var is_final = (end_idx == total_size)
+						rpc_id(sender_id, "receive_scene_state", scene_path, chunk, is_final)
+						offset += chunk_size
 				DirAccess.remove_absolute(temp_path)
 
 @rpc("any_peer", "reliable")
-func receive_scene_state(path: String, bytes: PackedByteArray):
+func receive_scene_state(path: String, bytes: PackedByteArray, is_final: bool = true):
 	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
 		printerr("Team Create: Unauthorized scene state access: ", path)
 		return
 	if not path.begins_with("res://") or ".." in path:
 		printerr("Invalid scene state path received: ", path)
 		return
+
+	var sender_id = multiplayer.get_remote_sender_id()
+	var state_key = str(sender_id) + "_" + path
+	if not _receiving_scene_states.has(state_key):
+		_receiving_scene_states[state_key] = PackedByteArray()
+
+	_receiving_scene_states[state_key].append_array(bytes)
+
+	if not is_final:
+		return
+
+	var full_bytes = _receiving_scene_states[state_key]
+	_receiving_scene_states.erase(state_key)
+	bytes = full_bytes
 
 	var file = FileAccess.open(path, FileAccess.WRITE)
 	if file:
