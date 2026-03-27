@@ -9,6 +9,8 @@ var plugin: EditorPlugin
 var peer = ENetMultiplayerPeer.new()
 var is_server = false
 var peers = {} # Dictionary mapping peer_id to user info (username, color)
+var _color_assignment_counter = 0
+var _assigned_colors = []
 var file_sync
 var scene_sync
 
@@ -66,6 +68,8 @@ func disconnect_peer():
 			peer.close()
 	multiplayer.multiplayer_peer = null
 	peers.clear()
+	_color_assignment_counter = 0
+	_assigned_colors.clear()
 	if ui:
 		ui.set_disconnected()
 	if file_sync:
@@ -74,7 +78,12 @@ func disconnect_peer():
 
 func _add_peer(id: int):
 	if not peers.has(id):
-		peers[id] = _get_default_peer_info(id)
+		if is_server:
+			peers[id] = _generate_peer_info(id)
+			if id != 1:
+				rpc("sync_peer_info", id, peers[id])
+		else:
+			peers[id] = _get_default_peer_info(id) # temporary fallback until server syncs
 
 func _on_peer_connected(id: int):
 	print("Peer connected: ", id)
@@ -92,8 +101,12 @@ func _on_peer_connected(id: int):
 		for existing_id in peers.keys():
 			rpc_id(id, "sync_peer_info", existing_id, peers[existing_id])
 
-	# Everyone tells the new peer about themselves
-	rpc_id(id, "sync_peer_info", multiplayer.get_unique_id(), peers[multiplayer.get_unique_id()])
+		# Inform all other peers about the new peer with its server-assigned info
+		for peer_id in peers.keys():
+			if peer_id != 1 and peer_id != id:
+				rpc_id(peer_id, "sync_peer_info", id, peers[id])
+
+
 
 func _on_peer_disconnected(id: int):
 	print("Peer disconnected: ", id)
@@ -129,6 +142,9 @@ func _request_scene_from_server():
 
 @rpc("any_peer", "reliable")
 func sync_peer_info(id: int, info: Dictionary):
+	# Only the server should dictate peer info to avoid race conditions and enforce color assignments.
+	if not is_server and multiplayer.get_remote_sender_id() != 1:
+		return
 	peers[id] = info
 	if ui:
 		ui.update_users_count(peers.size())
@@ -199,6 +215,29 @@ func _process(_delta: float) -> void:
 		if webrtc_peer:
 			webrtc_peer.poll()
 
+
+func _generate_peer_info(id: int) -> Dictionary:
+	var rng = RandomNumberGenerator.new()
+	rng.seed = id
+
+	var color
+	if _color_assignment_counter < 4:
+		var initial_colors = [Color.BLUE, Color.GREEN, Color.RED, Color.PURPLE]
+		var available_colors = []
+		for c in initial_colors:
+			if not _assigned_colors.has(c):
+				available_colors.append(c)
+		var rand_index = rng.randi() % available_colors.size()
+		color = available_colors[rand_index]
+		_assigned_colors.append(color)
+		_color_assignment_counter += 1
+	else:
+		color = Color.from_hsv(rng.randf(), 0.8, 0.9)
+
+	var adjectives = ["Fast", "Cool", "Smart", "Brave", "Wild", "Quick", "Sly", "Bold"]
+	var nouns = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
+	var username = adjectives[rng.randi() % adjectives.size()] + nouns[rng.randi() % nouns.size()] + str(rng.randi() % 100)
+	return {"username": username, "color": color}
 
 func _get_default_peer_info(id: int) -> Dictionary:
 	var rng = RandomNumberGenerator.new()
