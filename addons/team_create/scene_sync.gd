@@ -17,6 +17,7 @@ var _force_full_sync_next_frame = false
 var _pending_resource_properties = []
 var _receiving_scenes: Dictionary = {}
 var _receiving_scene_states: Dictionary = {}
+var _receiving_properties: Dictionary = {}
 
 func _ready():
 	var tree = Engine.get_main_loop() as SceneTree
@@ -159,7 +160,7 @@ func _check_single_node_changes(node: Node):
 		var last_props = _last_tracked_properties[id]
 		for prop_name in current_props:
 			if not last_props.has(prop_name) or last_props[prop_name] != current_props[prop_name]:
-				rpc("update_node_property", id, prop_name, current_props[prop_name], _last_scene_path)
+				_send_update_node_property(id, prop_name, current_props[prop_name], _last_scene_path)
 				last_props[prop_name] = current_props[prop_name]
 
 func _track_selection():
@@ -408,7 +409,7 @@ func _sync_all_node_properties(node: Node, id: String):
 
 	# Send all non-default properties
 	for prop_name in current_props:
-		rpc("update_node_property", id, prop_name, current_props[prop_name], _last_scene_path)
+		_send_update_node_property(id, prop_name, current_props[prop_name], _last_scene_path)
 
 func _on_node_removed(node: Node):
 	var inst_id = node.get_instance_id()
@@ -535,6 +536,42 @@ func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: St
 				node.name = new_name
 				_node_names[node.get_instance_id()] = new_name
 	_ignore_next_structure_event = false
+
+func _send_update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
+	if typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes"):
+		var bytes = value["sub_resource_bytes"] as PackedByteArray
+		var chunk_size = 60000
+		var total_size = bytes.size()
+		var offset = 0
+
+		if total_size == 0:
+			rpc("update_node_property_chunked", id, prop_name, bytes, scene_path, true)
+			return
+
+		while offset < total_size:
+			var end_idx = min(offset + chunk_size, total_size)
+			var chunk = bytes.slice(offset, end_idx)
+			var is_final = (end_idx == total_size)
+			rpc("update_node_property_chunked", id, prop_name, chunk, scene_path, is_final)
+			offset += chunk_size
+	else:
+		rpc("update_node_property", id, prop_name, value, scene_path)
+
+@rpc("any_peer", "reliable")
+func update_node_property_chunked(id: String, prop_name: String, chunk: PackedByteArray, scene_path: String = "", is_final: bool = true):
+	var sender_id = multiplayer.get_remote_sender_id()
+	var prop_key = str(sender_id) + "_" + id + "_" + prop_name
+
+	if not _receiving_properties.has(prop_key):
+		_receiving_properties[prop_key] = PackedByteArray()
+
+	_receiving_properties[prop_key].append_array(chunk)
+
+	if is_final:
+		var full_bytes = _receiving_properties[prop_key]
+		_receiving_properties.erase(prop_key)
+		# Forward the reassembled value to the main property handler
+		update_node_property(id, prop_name, {"sub_resource_bytes": full_bytes}, scene_path)
 
 @rpc("any_peer", "reliable")
 func update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
