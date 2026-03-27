@@ -84,6 +84,7 @@ func _process(delta):
 		_time_since_sync = 0.0
 		_track_selection()
 		_track_changes_throttled()
+	_sync_cursor_throttled(delta)
 
 	# Process pending resource properties (waiting for file sync)
 	for i in range(_pending_resource_properties.size() - 1, -1, -1):
@@ -331,7 +332,7 @@ func _on_node_added(node: Node):
 		return
 
 	# Prevent syncing internal nodes like editor UI or auto-generated items
-	if node.name.begins_with("@") or node.name.begins_with("TeamCreateSelectionOutline_"):
+	if node.name.begins_with("@") or node.name.begins_with("TeamCreateSelectionOutline_") or node.name.begins_with("TeamCreateCursor"):
 		return
 
 	var editor = network.plugin.get_editor_interface()
@@ -728,6 +729,9 @@ func request_scene_state(scene_path: String):
 			for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
 				if is_instance_valid(node):
 					outlines.append({"node": node, "parent": node.get_parent()})
+			for node in tree.get_nodes_in_group("TeamCreateCursors"):
+				if is_instance_valid(node):
+					outlines.append({"node": node, "parent": node.get_parent()})
 
 		for data in outlines:
 			data["parent"].remove_child(data["node"])
@@ -801,3 +805,205 @@ func receive_scene_state(path: String, bytes: PackedByteArray, is_final: bool = 
 				get_tree().create_timer(0.5).timeout.connect(func():
 					_is_reloading_scene = false
 				)
+
+
+# Tracking cursor positions
+var _last_cursor_sync = 0.0
+const CURSOR_SYNC_INTERVAL = 0.05
+var _local_3d_cursor_pos: Vector3 = Vector3.ZERO
+var _local_2d_cursor_pos: Vector2 = Vector2.ZERO
+var _has_3d_cursor = false
+var _has_2d_cursor = false
+
+
+func _sync_cursor_throttled(delta):
+	_last_cursor_sync += delta
+	if _last_cursor_sync >= CURSOR_SYNC_INTERVAL:
+		_last_cursor_sync = 0.0
+		if multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+			var data = _get_local_cursor_data()
+			if data.has_3d:
+				if data.pos_3d != _local_3d_cursor_pos:
+					_local_3d_cursor_pos = data.pos_3d
+					rpc("update_peer_cursor_3d", multiplayer.get_unique_id(), _local_3d_cursor_pos, _last_scene_path)
+			elif data.has_2d:
+				if data.pos_2d != _local_2d_cursor_pos:
+					_local_2d_cursor_pos = data.pos_2d
+					rpc("update_peer_cursor_2d", multiplayer.get_unique_id(), _local_2d_cursor_pos, _last_scene_path)
+
+
+@rpc("any_peer", "unreliable")
+func update_peer_cursor_3d(peer_id: int, pos: Vector3, scene_path: String = ""):
+	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+	if not current_scene or (scene_path != "" and current_scene.scene_file_path != scene_path):
+		_clear_peer_cursor(peer_id)
+		return
+
+	var tree = current_scene.get_tree()
+	if not tree: return
+
+	_clear_peer_cursor_2d(peer_id, current_scene)
+
+	var cursor = _get_or_create_peer_cursor_3d(peer_id, current_scene)
+	if cursor:
+		cursor.global_position = pos
+
+@rpc("any_peer", "unreliable")
+func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
+	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+	if not current_scene or (scene_path != "" and current_scene.scene_file_path != scene_path):
+		_clear_peer_cursor(peer_id)
+		return
+
+	var tree = current_scene.get_tree()
+	if not tree: return
+
+	_clear_peer_cursor_3d(peer_id, current_scene)
+
+	var cursor = _get_or_create_peer_cursor_2d(peer_id, current_scene)
+	if cursor:
+		# Assuming pos is local to the canvas. In Godot 4 Editor, `event.position` from `_forward_canvas_gui_input` is
+		# actually in canvas coordinates? Wait, it's typically canvas coordinates if you handle it correctly.
+		# Let's set it to global_position of a Node2D
+		cursor.global_position = pos
+
+func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
+	var group_name = "TeamCreateCursor3D_" + str(peer_id)
+	var nodes = current_scene.get_tree().get_nodes_in_group(group_name)
+	if nodes.size() > 0 and is_instance_valid(nodes[0]):
+		return nodes[0]
+
+	var cursor = MeshInstance3D.new()
+	cursor.name = "TeamCreateCursor3D_" + str(peer_id)
+	cursor.add_to_group(group_name)
+	cursor.add_to_group("TeamCreateCursors")
+	cursor.set_meta("_edit_lock_", true)
+
+	var sphere = SphereMesh.new()
+	sphere.radius = 0.1
+	sphere.height = 0.2
+
+	var mat = StandardMaterial3D.new()
+	var color = network.get_user_color(peer_id)
+	mat.albedo_color = color
+	mat.albedo_color.a = 0.5
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.no_depth_test = true
+
+	cursor.mesh = sphere
+	cursor.material_override = mat
+
+	current_scene.add_child(cursor)
+	return cursor
+
+func _get_or_create_peer_cursor_2d(peer_id: int, current_scene: Node) -> Node2D:
+	var group_name = "TeamCreateCursor2D_" + str(peer_id)
+	var nodes = current_scene.get_tree().get_nodes_in_group(group_name)
+	if nodes.size() > 0 and is_instance_valid(nodes[0]):
+		return nodes[0]
+
+	var cursor = Node2D.new()
+	cursor.name = "TeamCreateCursor2D_" + str(peer_id)
+	cursor.add_to_group(group_name)
+	cursor.add_to_group("TeamCreateCursors")
+	cursor.set_meta("_edit_lock_", true)
+
+	# Draw a simple cursor shape (like a colored circle or pointer) using a script or polygon
+	# We can use a Sprite2D with a generated image, or a Polygon2D
+	var poly = Polygon2D.new()
+	var color = network.get_user_color(peer_id)
+	poly.color = color
+	poly.color.a = 0.7
+	poly.polygon = PackedVector2Array([
+		Vector2(0, 0),
+		Vector2(15, 20),
+		Vector2(8, 20),
+		Vector2(12, 28),
+		Vector2(8, 30),
+		Vector2(2, 22),
+		Vector2(-4, 26)
+	])
+
+	cursor.add_child(poly)
+	current_scene.add_child(cursor)
+	return cursor
+
+func _clear_peer_cursor(peer_id: int):
+	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+	if not current_scene: return
+	_clear_peer_cursor_3d(peer_id, current_scene)
+	_clear_peer_cursor_2d(peer_id, current_scene)
+
+func _clear_peer_cursor_3d(peer_id: int, current_scene: Node):
+	for node in current_scene.get_tree().get_nodes_in_group("TeamCreateCursor3D_" + str(peer_id)):
+		if is_instance_valid(node): node.queue_free()
+
+func _clear_peer_cursor_2d(peer_id: int, current_scene: Node):
+	for node in current_scene.get_tree().get_nodes_in_group("TeamCreateCursor2D_" + str(peer_id)):
+		if is_instance_valid(node): node.queue_free()
+
+
+func _find_editor_viewport(node: Node, type_name: String) -> Node:
+	if node.get_class() == type_name:
+		return node
+	for i in range(node.get_child_count()):
+		var res = _find_editor_viewport(node.get_child(i), type_name)
+		if res: return res
+	return null
+
+func _find_editor_camera_3d(node: Node) -> Camera3D:
+	if node is Camera3D:
+		return node
+	for i in range(node.get_child_count()):
+		var res = _find_editor_camera_3d(node.get_child(i))
+		if res: return res
+	return null
+
+
+var _cached_3d_viewport: Node = null
+var _cached_2d_viewport: Control = null
+var _cached_3d_camera: Camera3D = null
+
+func _get_local_cursor_data() -> Dictionary:
+	var result = {"has_3d": false, "pos_3d": Vector3.ZERO, "has_2d": false, "pos_2d": Vector2.ZERO}
+	var main_screen = network.plugin.get_editor_interface().get_editor_main_screen()
+	if not is_instance_valid(main_screen) or not main_screen.is_inside_tree(): return result
+
+	if not is_instance_valid(_cached_3d_viewport):
+		_cached_3d_viewport = _find_editor_viewport(main_screen, "Node3DEditorViewport")
+	if not is_instance_valid(_cached_2d_viewport):
+		_cached_2d_viewport = _find_editor_viewport(main_screen, "CanvasItemEditorViewport")
+
+	# Try 3D
+	if is_instance_valid(_cached_3d_viewport) and _cached_3d_viewport.is_visible_in_tree():
+		if not is_instance_valid(_cached_3d_camera):
+			_cached_3d_camera = _find_editor_camera_3d(_cached_3d_viewport)
+
+		var cam = _cached_3d_camera
+		if is_instance_valid(cam):
+			var viewport = cam.get_viewport()
+			if viewport:
+				var mouse_pos = viewport.get_mouse_position()
+				var rect = Rect2(Vector2.ZERO, viewport.size)
+				if rect.has_point(mouse_pos):
+					var origin = cam.project_ray_origin(mouse_pos)
+					var normal = cam.project_ray_normal(mouse_pos)
+					result.has_3d = true
+					result.pos_3d = origin + normal * 10.0
+
+	# Try 2D
+	if is_instance_valid(_cached_2d_viewport) and _cached_2d_viewport.is_visible_in_tree():
+		var mouse_pos = _cached_2d_viewport.get_local_mouse_position()
+		var rect = Rect2(Vector2.ZERO, _cached_2d_viewport.size)
+		if rect.has_point(mouse_pos):
+			result.has_2d = true
+			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+			if current_scene and current_scene is Node2D:
+				result.pos_2d = current_scene.get_global_mouse_position()
+			elif current_scene and current_scene is Control:
+				result.pos_2d = current_scene.get_global_mouse_position()
+			else:
+				result.pos_2d = _cached_2d_viewport.get_global_mouse_position()
+
+	return result
