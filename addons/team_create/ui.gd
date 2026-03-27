@@ -63,6 +63,8 @@ func _init() -> void:
 	ip_edit.placeholder_text = "Host IP Address (e.g., 127.0.0.1)"
 	ip_edit.tooltip_text = "Enter the IP address of the host you want to join over LAN."
 	ip_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ip_edit.clear_button_enabled = true
+	ip_edit.select_all_on_focus = true
 	vbox.add_child(ip_edit)
 
 	# HBox for Host and Join buttons
@@ -308,4 +310,6 @@ func _on_update_pressed() -> void:
 		if update_btn.text == "Update Available!":
 			network.plugin.download_update()
 		else:
+			update_btn.text = "Checking..."
+			update_btn.disabled = true
 			network.plugin.check_for_updates()
