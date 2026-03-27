@@ -112,6 +112,9 @@ func _track_changes_throttled():
 		_last_scene_path = current_scene.scene_file_path
 		_last_tracked_properties.clear()
 
+		if _last_scene_path != "":
+			rpc("request_scene_state", _last_scene_path)
+
 	if _force_full_sync_next_frame:
 		_force_full_sync_next_frame = false
 		_check_all_nodes(current_scene)
@@ -594,3 +597,52 @@ func receive_scene(path: String, bytes: PackedByteArray):
 		file.store_buffer(bytes)
 		file.close()
 		print("Received scene: ", path)
+
+@rpc("any_peer", "reliable")
+func request_scene_state(scene_path: String):
+	if scene_path == "":
+		return
+
+	var editor = network.plugin.get_editor_interface()
+	var current_scene = editor.get_edited_scene_root()
+
+	if current_scene and current_scene.scene_file_path == scene_path:
+		var sender_id = multiplayer.get_remote_sender_id()
+
+		# Temporarily remove selection outlines so they aren't packed
+		var outlines = []
+		for node in current_scene.find_children("*", "Node", true, false):
+			if node.has_meta("team_create_outline_peer") or node.name.begins_with("TeamCreateSelectionOutline_"):
+				outlines.append({"node": node, "parent": node.get_parent()})
+
+		for data in outlines:
+			data["parent"].remove_child(data["node"])
+
+		var packed = PackedScene.new()
+		var err = packed.pack(current_scene)
+
+		# Restore outlines
+		for data in outlines:
+			data["parent"].add_child(data["node"])
+
+		if err == OK:
+			var temp_path = "user://temp_scene_state_" + str(multiplayer.get_unique_id()) + ".tscn"
+			if ResourceSaver.save(packed, temp_path) == OK:
+				var bytes = FileAccess.get_file_as_bytes(temp_path)
+				if bytes:
+					rpc_id(sender_id, "receive_scene_state", scene_path, bytes)
+
+@rpc("any_peer", "reliable")
+func receive_scene_state(path: String, bytes: PackedByteArray):
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
+		printerr("Team Create: Unauthorized scene state access: ", path)
+		return
+	if not path.begins_with("res://") or ".." in path:
+		printerr("Invalid scene state path received: ", path)
+		return
+
+	var file = FileAccess.open(path, FileAccess.WRITE)
+	if file:
+		file.store_buffer(bytes)
+		file.close()
+		print("Team Create: Received up-to-date scene state for ", path)
