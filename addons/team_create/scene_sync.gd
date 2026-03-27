@@ -54,21 +54,19 @@ func _connect_tree_exiting_recursive(node: Node):
 
 func _on_node_tree_exiting(node: Node):
 	if multiplayer.has_multiplayer_peer() and not multiplayer.get_peers().is_empty():
+		var current_scene = null
+		if network and network.plugin:
+			current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+
 		var scene_path = ""
 		if node.owner and node.owner.scene_file_path != "":
 			scene_path = node.owner.scene_file_path
 		elif node.scene_file_path != "":
 			scene_path = node.scene_file_path
-		elif network and network.plugin:
-			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
-			if current_scene:
-				scene_path = current_scene.scene_file_path
+		elif current_scene:
+			scene_path = current_scene.scene_file_path
 
-		var root_node = null
-		if network and network.plugin:
-			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
-			if current_scene:
-				root_node = current_scene
+		var root_node = current_scene
 
 		_pre_removal_paths[node.get_instance_id()] = {"id": network.assign_unique_id(node), "scene_path": scene_path, "root_node": root_node}
 
@@ -117,18 +115,18 @@ func _track_changes_throttled():
 
 	if _force_full_sync_next_frame:
 		_force_full_sync_next_frame = false
-		_check_all_nodes(current_scene)
+		_check_all_nodes(current_scene, current_scene)
 	else:
 		# ONLY track changes for selected nodes to save massive performance costs
 		var selected = editor.get_selection().get_selected_nodes()
 		for node in selected:
 			_check_single_node_changes(node)
 
-func _check_all_nodes(node: Node):
-	if node.owner == network.plugin.get_editor_interface().get_edited_scene_root() or node == network.plugin.get_editor_interface().get_edited_scene_root():
+func _check_all_nodes(node: Node, scene_root: Node):
+	if node.owner == scene_root or node == scene_root:
 		_check_single_node_changes(node)
 	for child in node.get_children():
-		_check_all_nodes(child)
+		_check_all_nodes(child, scene_root)
 
 func _check_single_node_changes(node: Node):
 	var id = network.assign_unique_id(node)
@@ -186,13 +184,8 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 		return
 
 	# Clear previous indicators
-	for node in current_scene.find_children("*", "Node", true, false):
-		if node.has_meta("team_create_outline_peer"):
-			if node.get_meta("team_create_outline_peer") == peer_id:
-				node.queue_free()
-		elif node.name.begins_with("TeamCreateSelectionOutline_" + str(peer_id)):
-			# Also clean up any unmanaged older outlines by name just in case
-			node.queue_free()
+	for node in current_scene.get_tree().get_nodes_in_group("TeamCreateSelectionOutlines_" + str(peer_id)):
+		node.queue_free()
 
 	# Add new indicators
 	for id in selected_ids:
@@ -202,6 +195,8 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 				var outline = MeshInstance3D.new()
 				outline.name = "TeamCreateSelectionOutline_" + str(peer_id)
 				outline.set_meta("team_create_outline_peer", peer_id)
+				outline.add_to_group("TeamCreateSelectionOutlines_" + str(peer_id))
+				outline.add_to_group("TeamCreateSelectionOutlines")
 				var mat = StandardMaterial3D.new()
 				mat.albedo_color = color
 				mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -225,6 +220,8 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 				var outline = ColorRect.new()
 				outline.name = "TeamCreateSelectionOutline_" + str(peer_id)
 				outline.set_meta("team_create_outline_peer", peer_id)
+				outline.add_to_group("TeamCreateSelectionOutlines_" + str(peer_id))
+				outline.add_to_group("TeamCreateSelectionOutlines")
 				outline.color = color
 				outline.color.a = 0.5
 
@@ -245,12 +242,8 @@ func clear_peer_selections(peer_id: int):
 	if not current_scene:
 		return
 
-	for node in current_scene.find_children("*", "Node", true, false):
-		if node.has_meta("team_create_outline_peer"):
-			if node.get_meta("team_create_outline_peer") == peer_id:
-				node.queue_free()
-		elif node.name.begins_with("TeamCreateSelectionOutline_" + str(peer_id)):
-			node.queue_free()
+	for node in current_scene.get_tree().get_nodes_in_group("TeamCreateSelectionOutlines_" + str(peer_id)):
+		node.queue_free()
 
 func push_current_scene():
 	if multiplayer.is_server():
@@ -614,9 +607,8 @@ func request_scene_state(scene_path: String):
 
 		# Temporarily remove selection outlines so they aren't packed
 		var outlines = []
-		for node in current_scene.find_children("*", "Node", true, false):
-			if node.has_meta("team_create_outline_peer") or node.name.begins_with("TeamCreateSelectionOutline_"):
-				outlines.append({"node": node, "parent": node.get_parent()})
+		for node in current_scene.get_tree().get_nodes_in_group("TeamCreateSelectionOutlines"):
+			outlines.append({"node": node, "parent": node.get_parent()})
 
 		for data in outlines:
 			data["parent"].remove_child(data["node"])
