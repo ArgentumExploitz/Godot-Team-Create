@@ -118,6 +118,7 @@ func _on_peer_disconnected(id: int):
 	# Clear selection outlines for disconnected peer
 	if scene_sync:
 		scene_sync.clear_peer_selections(id)
+		scene_sync._clear_peer_cursor(id)
 
 func _on_connected_to_server():
 	print("Connected to server successfully!")
