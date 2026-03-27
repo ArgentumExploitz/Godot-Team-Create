@@ -80,8 +80,14 @@ func _http_request_completed(result: int, response_code: int, headers: PackedStr
 			_prompt_update()
 		else:
 			print("Team Create is up to date.")
+			if dock and dock.update_btn:
+				dock.update_btn.text = "Up to date!"
+				dock.update_btn.disabled = false
 	else:
 		print("Failed to check for updates. Result: " + str(result) + ", Code: " + str(response_code))
+		if dock and dock.update_btn:
+			dock.update_btn.text = "Check Failed"
+			dock.update_btn.disabled = false
 
 	http_request.queue_free()
 var downloading = false
@@ -91,6 +97,7 @@ func _prompt_update() -> void:
 		return
 	if dock and dock.update_btn:
 		dock.update_btn.text = "Update Available!"
+		dock.update_btn.disabled = false
 		dock.update_btn.add_theme_color_override("font_color", Color.GREEN)
 
 func _reset_update_button() -> void:
