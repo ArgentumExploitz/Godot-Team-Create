@@ -436,13 +436,16 @@ func _on_node_removed(node: Node):
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty() or id == "":
 		return
 
+	if id == ".":
+		return
+
 	# Delay execution slightly to check if the scene root is also being destroyed
 	# (which happens during scene reload/close)
 	await get_tree().process_frame
 
 	# If the root node that owned this node is no longer valid, the entire scene was closed or reloaded.
 	# We should NOT broadcast individual node removals for a destroyed scene.
-	if root_node != null and not is_instance_valid(root_node):
+	if root_node != null and (not is_instance_valid(root_node) or not root_node.is_inside_tree()):
 		return
 
 	# Prevent sending removal if the user is just closing/switching scenes.
@@ -666,8 +669,13 @@ func receive_scene(path: String, bytes: PackedByteArray, is_final: bool = true):
 			is_active = true
 
 		if is_active:
-			# 1. Skip writing to disk so Godot does not auto-reload
-			print("Team Create: Ignored saving active scene to disk to prevent auto-reload flood.")
+			# 1. Write to disk and force reload
+			var file = FileAccess.open(path, FileAccess.WRITE)
+			if file:
+				file.store_buffer(bytes)
+				file.close()
+			editor.reload_scene_from_path(path)
+			print("Team Create: Applying received scene to active view.")
 			_is_reloading_scene = true
 			_force_full_sync_next_frame = true
 
@@ -769,3 +777,13 @@ func receive_scene_state(path: String, bytes: PackedByteArray, is_final: bool = 
 		file.store_buffer(bytes)
 		file.close()
 		print("Team Create: Received up-to-date scene state for ", path)
+
+		if network and network.plugin:
+			var editor = network.plugin.get_editor_interface()
+			var current_scene = editor.get_edited_scene_root()
+			if current_scene and current_scene.scene_file_path == path:
+				_is_reloading_scene = true
+				editor.reload_scene_from_path(path)
+				get_tree().create_timer(0.5).timeout.connect(func():
+					_is_reloading_scene = false
+				)
