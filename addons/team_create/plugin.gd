@@ -132,6 +132,7 @@ func _extract_and_apply_update(zip_path: String) -> void:
 	var err = zip_reader.open(zip_path)
 	if err != OK:
 		print("Failed to open update zip.")
+		DirAccess.remove_absolute(zip_path)
 		_reset_update_button()
 		return
 
