@@ -7,6 +7,7 @@ var _scan_timer: SceneTreeTimer
 var _pending_files_to_receive = 0
 var downloading_files: Array = []
 var _sync_blocker: ColorRect
+var _receiving_files: Dictionary = {}
 signal sync_completed
 
 
@@ -198,10 +199,24 @@ func request_file(path: String):
 	# Send file back
 	var bytes = FileAccess.get_file_as_bytes(path)
 	if bytes:
-		rpc_id(multiplayer.get_remote_sender_id(), "receive_file", path, bytes)
+		var sender_id = multiplayer.get_remote_sender_id()
+		var chunk_size = 60000
+		var total_size = bytes.size()
+		var offset = 0
+
+		if total_size == 0:
+			rpc_id(sender_id, "receive_file", path, bytes, true)
+			return
+
+		while offset < total_size:
+			var end_idx = min(offset + chunk_size, total_size)
+			var chunk = bytes.slice(offset, end_idx)
+			var is_final = (end_idx == total_size)
+			rpc_id(sender_id, "receive_file", path, chunk, is_final)
+			offset += chunk_size
 
 @rpc("any_peer", "reliable")
-func receive_file(path: String, bytes: PackedByteArray):
+func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 	# Validate path to prevent directory traversal
 	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
 		printerr("Team Create: Unauthorized file access: ", path)
@@ -209,6 +224,20 @@ func receive_file(path: String, bytes: PackedByteArray):
 	if not path.begins_with("res://") or ".." in path:
 		printerr("Invalid file path received: ", path)
 		return
+
+	var sender_id = multiplayer.get_remote_sender_id()
+	var file_key = str(sender_id) + "_" + path
+	if not _receiving_files.has(file_key):
+		_receiving_files[file_key] = PackedByteArray()
+
+	_receiving_files[file_key].append_array(bytes)
+
+	if not is_final:
+		return
+
+	var full_bytes = _receiving_files[file_key]
+	_receiving_files.erase(file_key)
+	bytes = full_bytes
 
 	# Convert temporary files based on origin
 	if path.ends_with(".tmp"):
