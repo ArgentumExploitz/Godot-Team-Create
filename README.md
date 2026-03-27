@@ -15,13 +15,6 @@
 
 Basically, this is a Godot 4.* plugin that lets you and your friends jump into the same editor and build the game together in real-time. 
 
-## What it actually does
-- Connect up over LAN or straight through WebRTC.
-- Automatically syncs project files and scenes so everyone is looking at the exact same stuff.
-- Fair warning: as a side effect of how the sync works, some temporary files instantly become real assets now. 
-- Tells you right in the editor when I push an update to the GitHub repo so you aren't running an ancient version.
-- WIP user visuals: right now you can just see a selection box where your friends are clicking. Later on, I'm planning to add floating orbs with usernames for 3D scenes and actual cursors for 2D.
-
 ## What you need
 - Godot 4.0 or newer.
 - A decent internet connection between everyone.
@@ -67,3 +60,11 @@ WebRTC allows you to connect over the internet without port forwarding by copyin
 3. Paste the Host's Offer connection string into the text box and click **Confirm**.
 4. The plugin will process the Offer and automatically generate your Answer connection string.
 5. Copy your Answer connection string and send it back to the Host.
+
+<a href="https://www.star-history.com/?repos=N3rmis%2FGodot-Team-Create&type=date&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=N3rmis/Godot-Team-Create&type=date&theme=dark&logscale&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=N3rmis/Godot-Team-Create&type=date&logscale&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=N3rmis/Godot-Team-Create&type=date&logscale&legend=top-left" />
+ </picture>
+</a>
