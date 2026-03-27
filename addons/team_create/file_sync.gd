@@ -254,11 +254,14 @@ func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 		var open_scenes = ei.get_open_scenes()
 
 		if current_scene and current_scene.scene_file_path == path:
-			# Skip writing the file entirely so Godot does NOT auto-reload the scene.
-			# Instead, trigger a full structure resync to manually replicate it (or rely on live sync).
-			print("Team Create: Ignored saving active scene to disk to prevent auto-reload flood.")
+			print("Team Create: Applying received file to active scene view.")
+			var file = FileAccess.open(path, FileAccess.WRITE)
+			if file:
+				file.store_buffer(bytes)
+				file.close()
 			network.scene_sync._is_reloading_scene = true
 			network.scene_sync._force_full_sync_next_frame = true
+			ei.reload_scene_from_path(path)
 			get_tree().create_timer(0.5).timeout.connect(func():
 				if is_instance_valid(network) and network.scene_sync:
 					network.scene_sync._is_reloading_scene = false
