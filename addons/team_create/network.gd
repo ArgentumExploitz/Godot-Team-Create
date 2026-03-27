@@ -504,4 +504,7 @@ func webrtc_confirm(encoded_str: String):
 		print("Adding ICE candidates to remote connection...")
 		print("Adding ", data["candidates"].size(), " ICE candidates...")
 		for cand in data["candidates"]:
-			webrtc_connection.add_ice_candidate(cand["media"], cand["index"], cand["name"])
+			if typeof(cand) == TYPE_DICTIONARY and cand.has("media") and cand.has("index") and cand.has("name"):
+				webrtc_connection.add_ice_candidate(cand["media"], cand["index"], cand["name"])
+			else:
+				print("Invalid ICE candidate format.")

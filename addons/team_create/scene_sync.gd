@@ -93,9 +93,9 @@ func _process(delta):
 		if ResourceLoader.exists(pending.value):
 			var editor = network.plugin.get_editor_interface()
 			var current_scene = editor.get_edited_scene_root()
-			if current_scene:
+			if current_scene and current_scene.scene_file_path == pending.scene_path:
 				var node = network.get_node_by_unique_id(current_scene, pending.id)
-				if node:
+				if is_instance_valid(node):
 					var res = load(pending.value)
 					if res:
 						node.set(pending.prop_name, res)
@@ -189,8 +189,11 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 		return
 
 	# Clear previous indicators
-	for node in current_scene.get_tree().get_nodes_in_group("TeamCreateSelectionOutlines_" + str(peer_id)):
-		node.queue_free()
+	var tree = current_scene.get_tree()
+	if tree:
+		for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines_" + str(peer_id)):
+			if is_instance_valid(node):
+				node.queue_free()
 
 	# Add new indicators
 	for id in selected_ids:
@@ -219,7 +222,8 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 
 				outline.mesh = box_mesh
 				outline.material_override = mat
-				node.add_child(outline)
+				if is_instance_valid(node) and node.is_inside_tree():
+					node.add_child(outline)
 
 			elif node is Node2D or node is Control:
 				var outline = ColorRect.new()
@@ -239,7 +243,8 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 
 				# Ensure it doesn't block mouse
 				outline.mouse_filter = Control.MOUSE_FILTER_IGNORE
-				node.add_child(outline)
+				if is_instance_valid(node) and node.is_inside_tree():
+					node.add_child(outline)
 
 func clear_peer_selections(peer_id: int):
 	var editor = network.plugin.get_editor_interface()
@@ -247,8 +252,11 @@ func clear_peer_selections(peer_id: int):
 	if not current_scene:
 		return
 
-	for node in current_scene.get_tree().get_nodes_in_group("TeamCreateSelectionOutlines_" + str(peer_id)):
-		node.queue_free()
+	var tree = current_scene.get_tree()
+	if tree:
+		for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines_" + str(peer_id)):
+			if is_instance_valid(node):
+				node.queue_free()
 
 func push_current_scene():
 	if multiplayer.is_server():
@@ -257,8 +265,8 @@ func push_current_scene():
 		if current_scene:
 			var path = current_scene.scene_file_path
 			if path != "":
-				var bytes = FileAccess.get_file_as_bytes(path)
-				if bytes:
+				if FileAccess.file_exists(path):
+					var bytes = FileAccess.get_file_as_bytes(path)
 					var chunk_size = 60000
 					var total_size = bytes.size()
 					var offset = 0
@@ -281,8 +289,8 @@ func push_current_scene_to_peer(id: int):
 		if current_scene:
 			var path = current_scene.scene_file_path
 			if path != "":
-				var bytes = FileAccess.get_file_as_bytes(path)
-				if bytes:
+				if FileAccess.file_exists(path):
+					var bytes = FileAccess.get_file_as_bytes(path)
 					var chunk_size = 60000
 					var total_size = bytes.size()
 					var offset = 0
@@ -514,9 +522,11 @@ func remote_node_removed(id: String, scene_path: String = ""):
 			_ignore_next_structure_event = false
 			return
 		var node = network.get_node_by_unique_id(current_scene, id)
-		if node and node != current_scene:
+		if is_instance_valid(node) and node != current_scene:
 			_node_names.erase(node.get_instance_id())
-			node.get_parent().remove_child(node)
+			var parent = node.get_parent()
+			if is_instance_valid(parent):
+				parent.remove_child(node)
 			node.queue_free()
 	_ignore_next_structure_event = false
 
@@ -717,8 +727,11 @@ func request_scene_state(scene_path: String):
 
 		# Temporarily remove selection outlines so they aren't packed
 		var outlines = []
-		for node in current_scene.get_tree().get_nodes_in_group("TeamCreateSelectionOutlines"):
-			outlines.append({"node": node, "parent": node.get_parent()})
+		var tree = current_scene.get_tree()
+		if tree:
+			for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
+				if is_instance_valid(node):
+					outlines.append({"node": node, "parent": node.get_parent()})
 
 		for data in outlines:
 			data["parent"].remove_child(data["node"])
@@ -728,13 +741,14 @@ func request_scene_state(scene_path: String):
 
 		# Restore outlines
 		for data in outlines:
-			data["parent"].add_child(data["node"])
+			if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
+				data["parent"].add_child(data["node"])
 
 		if err == OK:
 			var temp_path = "user://temp_scene_state_" + str(multiplayer.get_unique_id()) + ".tscn"
 			if ResourceSaver.save(packed, temp_path) == OK:
-				var bytes = FileAccess.get_file_as_bytes(temp_path)
-				if bytes:
+				if FileAccess.file_exists(temp_path):
+					var bytes = FileAccess.get_file_as_bytes(temp_path)
 					var chunk_size = 60000
 					var total_size = bytes.size()
 					var offset = 0
