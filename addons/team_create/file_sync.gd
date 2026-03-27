@@ -266,10 +266,11 @@ func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 
 		if current_scene and current_scene.scene_file_path == path:
 			print("Team Create: Applying received file to active scene view.")
-			var file = FileAccess.open(path, FileAccess.WRITE)
-			if file:
-				file.store_buffer(bytes)
-				file.close()
+			if bytes.size() > 0:
+				var file = FileAccess.open(path, FileAccess.WRITE)
+				if file:
+					file.store_buffer(bytes)
+					file.close()
 			network.scene_sync._is_reloading_scene = true
 			network.scene_sync._force_full_sync_next_frame = true
 			ei.reload_scene_from_path(path)
@@ -304,11 +305,12 @@ func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 	if not DirAccess.dir_exists_absolute(dir_path):
 		DirAccess.make_dir_recursive_absolute(dir_path)
 
-	var file = FileAccess.open(path, FileAccess.WRITE)
-	if file:
-		file.store_buffer(bytes)
-		file.close()
-		print("Received file: ", path)
+	if bytes.size() > 0:
+		var file = FileAccess.open(path, FileAccess.WRITE)
+		if file:
+			file.store_buffer(bytes)
+			file.close()
+			print("Received file: ", path)
 
 		# Trigger Editor resource scan if it's an asset, debounced to prevent premature imports generating new UIDs
 		if network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():

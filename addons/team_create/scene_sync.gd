@@ -152,7 +152,7 @@ func _check_single_node_changes(node: Node):
 					else:
 						# Serialize local sub-resources or resources without a file path
 						var bytes = var_to_bytes_with_objects(val)
-						current_props[p.name] = {"sub_resource_bytes": bytes}
+						current_props[p.name] = {"sub_resource_bytes": bytes, "resource_path": val.resource_path}
 			else:
 				current_props[p.name] = val
 
@@ -185,15 +185,17 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 	var current_scene = editor.get_edited_scene_root()
 	if not current_scene:
 		return
-	if scene_path != "" and current_scene.scene_file_path != scene_path:
-		return
 
-	# Clear previous indicators
+	# Clear previous indicators globally for this peer in the current scene
 	var tree = current_scene.get_tree()
 	if tree:
 		for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines_" + str(peer_id)):
 			if is_instance_valid(node):
 				node.queue_free()
+
+	# If the peer is selecting nodes in a different scene, we don't draw new indicators here.
+	if scene_path != "" and current_scene.scene_file_path != scene_path:
+		return
 
 	# Add new indicators
 	for id in selected_ids:
@@ -404,7 +406,7 @@ func _sync_all_node_properties(node: Node, id: String):
 							current_props[p.name] = val.resource_path
 						else:
 							var bytes = var_to_bytes_with_objects(val)
-							current_props[p.name] = {"sub_resource_bytes": bytes}
+							current_props[p.name] = {"sub_resource_bytes": bytes, "resource_path": val.resource_path}
 				else:
 					current_props[p.name] = val
 
@@ -555,17 +557,11 @@ func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: St
 func _send_update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
 	var needs_chunking = false
 	var bytes = PackedByteArray()
-	var is_sub_resource = false
 
-	if typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes"):
+	# Always serialize to check size
+	bytes = var_to_bytes_with_objects(value)
+	if bytes.size() > 60000:
 		needs_chunking = true
-		bytes = value["sub_resource_bytes"] as PackedByteArray
-		is_sub_resource = true
-	else:
-		# Serialize any other property to see if it's too big
-		bytes = var_to_bytes_with_objects(value)
-		if bytes.size() > 60000:
-			needs_chunking = true
 
 	if needs_chunking:
 		var chunk_size = 60000
@@ -573,20 +569,20 @@ func _send_update_node_property(id: String, prop_name: String, value: Variant, s
 		var offset = 0
 
 		if total_size == 0:
-			rpc("update_node_property_chunked", id, prop_name, bytes, scene_path, is_sub_resource, true)
+			rpc("update_node_property_chunked", id, prop_name, bytes, scene_path, true)
 			return
 
 		while offset < total_size:
 			var end_idx = min(offset + chunk_size, total_size)
 			var chunk = bytes.slice(offset, end_idx)
 			var is_final = (end_idx == total_size)
-			rpc("update_node_property_chunked", id, prop_name, chunk, scene_path, is_sub_resource, is_final)
+			rpc("update_node_property_chunked", id, prop_name, chunk, scene_path, is_final)
 			offset += chunk_size
 	else:
 		rpc("update_node_property", id, prop_name, value, scene_path)
 
 @rpc("any_peer", "reliable")
-func update_node_property_chunked(id: String, prop_name: String, chunk: PackedByteArray, scene_path: String = "", is_sub_resource: bool = false, is_final: bool = true):
+func update_node_property_chunked(id: String, prop_name: String, chunk: PackedByteArray, scene_path: String = "", is_final: bool = true):
 	var sender_id = multiplayer.get_remote_sender_id()
 	var prop_key = str(sender_id) + "_" + id + "_" + prop_name
 
@@ -599,11 +595,7 @@ func update_node_property_chunked(id: String, prop_name: String, chunk: PackedBy
 		var full_bytes = _receiving_properties[prop_key]
 		_receiving_properties.erase(prop_key)
 
-		var reassembled_value
-		if is_sub_resource:
-			reassembled_value = {"sub_resource_bytes": full_bytes}
-		else:
-			reassembled_value = bytes_to_var_with_objects(full_bytes)
+		var reassembled_value = bytes_to_var_with_objects(full_bytes)
 
 		# Forward the reassembled value to the main property handler
 		update_node_property(id, prop_name, reassembled_value, scene_path)
@@ -639,6 +631,8 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 			elif typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes"):
 				var res = bytes_to_var_with_objects(value["sub_resource_bytes"])
 				if res is Resource:
+					if value.has("resource_path") and value["resource_path"] != "":
+						res.take_over_path(value["resource_path"])
 					node.set(prop_name, res)
 			else:
 				node.set(prop_name, value)
@@ -682,10 +676,11 @@ func receive_scene(path: String, bytes: PackedByteArray, is_final: bool = true):
 
 		if is_active:
 			# 1. Write to disk and force reload
-			var file = FileAccess.open(path, FileAccess.WRITE)
-			if file:
-				file.store_buffer(bytes)
-				file.close()
+			if bytes.size() > 0:
+				var file = FileAccess.open(path, FileAccess.WRITE)
+				if file:
+					file.store_buffer(bytes)
+					file.close()
 			_is_reloading_scene = true
 			_force_full_sync_next_frame = true
 
@@ -708,11 +703,12 @@ func receive_scene(path: String, bytes: PackedByteArray, is_final: bool = true):
 
 			print("Team Create: Closed updated background scene tab: ", path)
 
-	var file = FileAccess.open(path, FileAccess.WRITE)
-	if file:
-		file.store_buffer(bytes)
-		file.close()
-		print("Received scene: ", path)
+	if bytes.size() > 0:
+		var file = FileAccess.open(path, FileAccess.WRITE)
+		if file:
+			file.store_buffer(bytes)
+			file.close()
+			print("Received scene: ", path)
 
 @rpc("any_peer", "reliable")
 func request_scene_state(scene_path: String):
@@ -789,11 +785,12 @@ func receive_scene_state(path: String, bytes: PackedByteArray, is_final: bool = 
 	_receiving_scene_states.erase(state_key)
 	bytes = full_bytes
 
-	var file = FileAccess.open(path, FileAccess.WRITE)
-	if file:
-		file.store_buffer(bytes)
-		file.close()
-		print("Team Create: Received up-to-date scene state for ", path)
+	if bytes.size() > 0:
+		var file = FileAccess.open(path, FileAccess.WRITE)
+		if file:
+			file.store_buffer(bytes)
+			file.close()
+			print("Team Create: Received up-to-date scene state for ", path)
 
 		if network and network.plugin:
 			var editor = network.plugin.get_editor_interface()
