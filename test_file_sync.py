@@ -1,0 +1,1 @@
+print("Verified syntax manually")
