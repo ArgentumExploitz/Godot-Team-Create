@@ -632,8 +632,24 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 			elif typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes"):
 				var res = bytes_to_var_with_objects(value["sub_resource_bytes"])
 				if res is Resource:
-					if value.has("resource_path") and value["resource_path"] != "":
-						res.take_over_path(value["resource_path"])
+					var path = value.get("resource_path", "")
+					if path != "":
+						var existing_res = null
+						if ResourceLoader.has_cached(path):
+							existing_res = load(path)
+
+						if existing_res and existing_res.get_class() == res.get_class():
+							# Copy properties to the existing shared resource
+							var props = res.get_property_list()
+							for p in props:
+								var p_name = p.name
+								if p.usage & PROPERTY_USAGE_STORAGE or p.usage & PROPERTY_USAGE_EDITOR:
+									if p_name != "resource_path" and p_name != "resource_local_to_scene" and p_name != "resource_name":
+										existing_res.set(p_name, res.get(p_name))
+							res = existing_res
+						else:
+							res.take_over_path(path)
+
 					node.set(prop_name, res)
 			else:
 				node.set(prop_name, value)
