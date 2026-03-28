@@ -403,6 +403,13 @@ func _on_node_removed(node: Node):
 
 	if _pre_removal_paths.has(inst_id): _pre_removal_paths.erase(inst_id)
 	if _node_names.has(inst_id): _node_names.erase(inst_id)
+
+	# Cache values before the node is freed or we await a frame
+	var parent_path_str = str(node.get_parent().get_path()) if node.get_parent() else ""
+	var cached_class = node.get_class()
+	var cached_name = node.name
+	var cached_props = _last_tracked_properties.get(id, {}).duplicate()
+
 	if id != "" and _last_tracked_properties.has(id): _last_tracked_properties.erase(id)
 
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty() or id == "" or id == ".": return
@@ -422,7 +429,7 @@ func _on_node_removed(node: Node):
 		id,
 		TeamCreateAction.TYPE_NODE_REMOVE,
 		{},
-		{"parent_path": str(node.get_parent().get_path()) if node.get_parent() else "", "type": node.get_class(), "name": node.name, "properties": _last_tracked_properties.get(id, {})}
+		{"parent_path": parent_path_str, "type": cached_class, "name": cached_name, "properties": cached_props}
 	)
 	_dispatch_action(action, scene_path)
 
