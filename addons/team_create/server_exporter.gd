@@ -67,61 +67,50 @@ const TSCN_TEMPLATE = """[gd_scene load_steps=2 format=3 uid="uid://teamcreatese
 script = ExtResource("1_1")
 """
 
-const PRESETS_TEMPLATE = """[preset.0]
-name="Linux/X11"
+const PRESETS_TEMPLATE = """
+[preset.tc_linux]
+name="TeamCreate_Linux"
 platform="Linux/X11"
 runnable=true
 dedicated_server=false
-custom_features=""
+custom_features="teamcreateserver"
 export_filter="all_resources"
 include_filter=""
 exclude_filter=""
-export_path="TeamCreateServer.x86_64"
+export_path="{linux_path}"
 encryption_include_filters=""
 encryption_exclude_filters=""
 encrypt_pck=false
 encrypt_directory=false
 script_export_mode=1
 
-[preset.0.options]
+[preset.tc_linux.options]
 custom_template/debug=""
 custom_template/release=""
 debug/export_console_wrapper=1
 binary_format/embed_pck=false
 
-[preset.1]
-name="Windows Desktop"
+[preset.tc_windows]
+name="TeamCreate_Windows"
 platform="Windows Desktop"
 runnable=true
 dedicated_server=false
-custom_features=""
+custom_features="teamcreateserver"
 export_filter="all_resources"
 include_filter=""
 exclude_filter=""
-export_path="TeamCreateServer.exe"
+export_path="{windows_path}"
 encryption_include_filters=""
 encryption_exclude_filters=""
 encrypt_pck=false
 encrypt_directory=false
 script_export_mode=1
 
-[preset.1.options]
+[preset.tc_windows.options]
 custom_template/debug=""
 custom_template/release=""
 debug/export_console_wrapper=1
 binary_format/embed_pck=false
-"""
-
-const PROJECT_TEMPLATE = """; Engine configuration file.
-config_version=5
-
-[application]
-config/name="Team Create Server"
-run/main_scene="res://addons/team_create/server.tscn"
-config/features=PackedStringArray("4.3", "Forward Plus")
-
-[editor_plugins]
-enabled=PackedStringArray("res://addons/team_create/plugin.cfg")
 """
 
 const LINUX_SH_TEMPLATE = """#!/bin/bash
@@ -155,7 +144,7 @@ echo Starting Team Create Server...
 pause
 """
 
-static func copy_dir_recursive(from_path: String, to_path: String) -> void:
+static func copy_dir_recursive(from_path: String, to_path: String, ignore_paths: Array = []) -> void:
 	if not DirAccess.dir_exists_absolute(from_path):
 		return
 	if not DirAccess.dir_exists_absolute(to_path):
@@ -167,15 +156,25 @@ static func copy_dir_recursive(from_path: String, to_path: String) -> void:
 		var file_name = dir.get_next()
 		while file_name != "":
 			if file_name != "." and file_name != "..":
-				if dir.current_is_dir():
-					copy_dir_recursive(from_path + "/" + file_name, to_path + "/" + file_name)
-				else:
-					var f_in = FileAccess.open(from_path + "/" + file_name, FileAccess.READ)
-					var f_out = FileAccess.open(to_path + "/" + file_name, FileAccess.WRITE)
-					if f_in and f_out:
-						f_out.store_buffer(f_in.get_buffer(f_in.get_length()))
-						f_in.close()
-						f_out.close()
+				var src_path = from_path + "/" + file_name
+				var dest_path = to_path + "/" + file_name
+
+				var should_ignore = false
+				for ig in ignore_paths:
+					if src_path.begins_with(ig) or dest_path.begins_with(ig):
+						should_ignore = true
+						break
+
+				if not should_ignore:
+					if dir.current_is_dir():
+						copy_dir_recursive(src_path, dest_path, ignore_paths)
+					else:
+						var f_in = FileAccess.open(src_path, FileAccess.READ)
+						var f_out = FileAccess.open(dest_path, FileAccess.WRITE)
+						if f_in and f_out:
+							f_out.store_buffer(f_in.get_buffer(f_in.get_length()))
+							f_in.close()
+							f_out.close()
 			file_name = dir.get_next()
 		dir.list_dir_end()
 
@@ -185,62 +184,96 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 	caller_ui.export_btn.text = "Exporting Server..."
 	caller_ui.export_btn.disabled = true
 
-	# Create a temporary project directory
-	var temp_dir = OS.get_user_data_dir() + "/team_create_server_export"
-	if DirAccess.dir_exists_absolute(temp_dir):
-		# Just rely on overwriting for now
-		pass
-	else:
-		DirAccess.make_dir_recursive_absolute(temp_dir)
+	# To avoid risking the user's project files during export and to ensure we don't infinitely recurse,
+	# we copy the current res:// project into a temporary safe directory inside user://
+	var temp_project_dir = OS.get_user_data_dir() + "/team_create_temp_export_project"
 
-	# Copy plugin files
-	var plugin_dest = temp_dir + "/addons/team_create"
-	DirAccess.make_dir_recursive_absolute(plugin_dest)
+	print("Cloning project to temporary directory...")
 
-	copy_dir_recursive("res://addons/team_create", plugin_dest)
+	if DirAccess.dir_exists_absolute(temp_project_dir):
+		# Just do a quick pseudo-clean of obvious files
+		var d = DirAccess.open(temp_project_dir)
+		if d:
+			d.list_dir_begin()
+			var fn = d.get_next()
+			while fn != "":
+				if fn != "." and fn != "..":
+					if not d.current_is_dir():
+						d.remove(fn)
+				fn = d.get_next()
 
-	# Overwrite with server specific files
-	var script_file = FileAccess.open(plugin_dest + "/server.gd", FileAccess.WRITE)
+	# Provide ignore paths: we don't want to copy the huge .godot folder, nor the target export dir if it's inside res://
+	var ignore_paths = ["res://.godot", target_dir]
+	copy_dir_recursive("res://", temp_project_dir, ignore_paths)
+
+	# Write server specific files into the temp project
+	if not DirAccess.dir_exists_absolute(temp_project_dir + "/addons/team_create"):
+		DirAccess.make_dir_recursive_absolute(temp_project_dir + "/addons/team_create")
+
+	var script_file = FileAccess.open(temp_project_dir + "/addons/team_create/server.gd", FileAccess.WRITE)
 	if script_file:
 		script_file.store_string(SERVER_SCRIPT_TEMPLATE)
 		script_file.close()
 
-	var tscn_file = FileAccess.open(plugin_dest + "/server.tscn", FileAccess.WRITE)
+	var tscn_file = FileAccess.open(temp_project_dir + "/addons/team_create/server.tscn", FileAccess.WRITE)
 	if tscn_file:
 		tscn_file.store_string(TSCN_TEMPLATE)
 		tscn_file.close()
 
-	var proj_file = FileAccess.open(temp_dir + "/project.godot", FileAccess.WRITE)
-	if proj_file:
-		proj_file.store_string(PROJECT_TEMPLATE)
-		proj_file.close()
+	var proj_path = temp_project_dir + "/project.godot"
+	var preset_path = temp_project_dir + "/export_presets.cfg"
 
-	var preset_file = FileAccess.open(temp_dir + "/export_presets.cfg", FileAccess.WRITE)
-	if preset_file:
-		preset_file.store_string(PRESETS_TEMPLATE)
-		preset_file.close()
+	# Modify Project file to include our feature tag main scene override
+	var f_proj_append = FileAccess.open(proj_path, FileAccess.READ_WRITE)
+	if f_proj_append:
+		f_proj_append.seek_end()
+		f_proj_append.store_string("\n[application]\nrun/main_scene.teamcreateserver=\"res://addons/team_create/server.tscn\"\n")
+		f_proj_append.close()
+
+	# Modify Presets
+	var linux_export_path = target_dir + "/TeamCreateServer.x86_64"
+	var win_export_path = target_dir + "/TeamCreateServer.exe"
+	var presets_append = PRESETS_TEMPLATE.replace("{linux_path}", linux_export_path).replace("{windows_path}", win_export_path)
+
+	var original_presets = ""
+	if FileAccess.file_exists(preset_path):
+		var f_preset_read = FileAccess.open(preset_path, FileAccess.READ)
+		original_presets = f_preset_read.get_as_text()
+		f_preset_read.close()
+
+	var f_preset_write = FileAccess.open(preset_path, FileAccess.WRITE)
+	f_preset_write.store_string(original_presets + presets_append)
+	f_preset_write.close()
 
 	var godot_exec = OS.get_executable_path()
 
 	print("Attempting to build Linux Server binary...")
-	var linux_args = ["--path", temp_dir, "--headless", "--export-release", "Linux/X11", target_dir + "/TeamCreateServer.x86_64"]
+	var linux_args = ["--path", temp_project_dir, "--headless", "--export-release", "TeamCreate_Linux"]
 	var linux_out = []
 	var linux_exit = OS.execute(godot_exec, linux_args, linux_out, true)
-	print(linux_out)
+	print("Exit Code: ", linux_exit)
 
 	print("Attempting to build Windows Server binary...")
-	var win_args = ["--path", temp_dir, "--headless", "--export-release", "Windows Desktop", target_dir + "/TeamCreateServer.exe"]
+	var win_args = ["--path", temp_project_dir, "--headless", "--export-release", "TeamCreate_Windows"]
 	var win_out = []
 	var win_exit = OS.execute(godot_exec, win_args, win_out, true)
-	print(win_out)
+	print("Exit Code: ", win_exit)
 
-	# If both exports failed, it's highly likely the user does not have export templates installed for Godot.
-	# We should fallback by copying the raw project files into their target directory along with launcher scripts.
-	if linux_exit != 0 and win_exit != 0:
-		print("Export templates likely missing. Falling back to script wrappers...")
+	# If either export failed, the user lacks export templates for Godot.
+	# Fallback: Provide the raw headless project and script wrappers to run using the editor executable.
+	if linux_exit != 0 or win_exit != 0:
+		print("Export templates likely missing or export failed. Falling back to script wrappers...")
 		var target_project_dir = target_dir + "/project"
-		DirAccess.make_dir_recursive_absolute(target_project_dir)
-		copy_dir_recursive(temp_dir, target_project_dir)
+
+		# Since the user might want a working project without export presets messing it up, we copy from temp_project_dir
+		copy_dir_recursive(temp_project_dir, target_project_dir, [temp_project_dir + "/export_presets.cfg"])
+
+		# Patch the target_project_dir's project.godot to make server.tscn the main scene completely
+		var t_proj = FileAccess.open(target_project_dir + "/project.godot", FileAccess.READ_WRITE)
+		if t_proj:
+			t_proj.seek_end()
+			t_proj.store_string("\n[application]\nrun/main_scene=\"res://addons/team_create/server.tscn\"\n")
+			t_proj.close()
 
 		var linux_sh = FileAccess.open(target_dir + "/start_server.sh", FileAccess.WRITE)
 		if linux_sh:
@@ -253,9 +286,6 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 			win_bat.close()
 
 		print("Fallback generated script wrappers and project bundle in: " + target_dir)
-
-		# Optional: Tell the user via OS Alert
-		# OS.alert("Export templates not found. A standalone project with script wrappers was generated instead.", "Export Warning")
 	else:
 		print("Export complete! Built executables in: " + target_dir)
 
