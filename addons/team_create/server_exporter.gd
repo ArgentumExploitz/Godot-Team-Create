@@ -11,6 +11,8 @@ class DummyEditorSettings:
 	func set_project_metadata(section, key, val): pass
 
 class DummyEditorFileSystem:
+	signal filesystem_changed
+	signal sources_changed
 	func is_scanning(): return false
 	func scan(): pass
 	func get_filesystem(): return self
@@ -18,6 +20,7 @@ class DummyEditorFileSystem:
 	func update_file(path): pass
 
 class DummyEditorSelection:
+	signal selection_changed
 	func get_selected_nodes(): return []
 
 class DummyEditorInterface:
@@ -49,6 +52,8 @@ class DummyEditorInterface:
 	func mark_scene_as_unsaved(): pass
 
 class DummyEditorUndoRedoManager:
+	signal version_changed
+	signal history_changed
 	func create_action(name, merge_mode=0, custom_context=null, undo_custom_context=false): pass
 	func add_do_property(object, property, value): pass
 	func add_undo_property(object, property, value): pass
