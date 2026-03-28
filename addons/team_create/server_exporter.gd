@@ -185,29 +185,34 @@ static func copy_dir_recursive(from_path: String, to_path: String, ignore_paths:
 
 	var dir = DirAccess.open(from_path)
 	if dir:
+		dir.include_hidden = true
+		dir.include_navigational = false
 		dir.list_dir_begin()
 		var file_name = dir.get_next()
 		while file_name != "":
-			if file_name != "." and file_name != "..":
-				var src_path = from_path + "/" + file_name
-				var dest_path = to_path + "/" + file_name
+			var src_path = from_path.path_join(file_name)
+			var dest_path = to_path.path_join(file_name)
 
-				var should_ignore = false
-				for ig in ignore_paths:
-					if src_path.begins_with(ig) or dest_path.begins_with(ig):
-						should_ignore = true
-						break
+			var should_ignore = false
+			var global_src = ProjectSettings.globalize_path(src_path)
+			var global_dest = ProjectSettings.globalize_path(dest_path)
 
-				if not should_ignore:
-					if dir.current_is_dir():
-						copy_dir_recursive(src_path, dest_path, ignore_paths)
-					else:
-						var f_in = FileAccess.open(src_path, FileAccess.READ)
-						var f_out = FileAccess.open(dest_path, FileAccess.WRITE)
-						if f_in and f_out:
-							f_out.store_buffer(f_in.get_buffer(f_in.get_length()))
-							f_in.close()
-							f_out.close()
+			for ig in ignore_paths:
+				var global_ig = ProjectSettings.globalize_path(ig)
+				if global_src.begins_with(global_ig) or global_dest.begins_with(global_ig):
+					should_ignore = true
+					break
+
+			if not should_ignore:
+				if dir.current_is_dir():
+					copy_dir_recursive(src_path, dest_path, ignore_paths)
+				else:
+					var f_in = FileAccess.open(src_path, FileAccess.READ)
+					var f_out = FileAccess.open(dest_path, FileAccess.WRITE)
+					if f_in and f_out:
+						f_out.store_buffer(f_in.get_buffer(f_in.get_length()))
+						f_in.close()
+						f_out.close()
 			file_name = dir.get_next()
 		dir.list_dir_end()
 
@@ -236,7 +241,7 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 				fn = d.get_next()
 
 	# Provide ignore paths: we don't want to copy the huge .godot folder, nor the target export dir if it's inside res://
-	var ignore_paths = ["res://.godot", target_dir]
+	var ignore_paths = ["res://.godot", "res://.git", target_dir]
 	copy_dir_recursive("res://", temp_project_dir, ignore_paths)
 
 	# Write server specific files into the temp project
