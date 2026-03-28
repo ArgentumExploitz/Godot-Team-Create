@@ -28,39 +28,86 @@ var export_btn: Button
 var export_dialog: FileDialog
 
 
+var lan_container: VBoxContainer
+var webrtc_container: VBoxContainer
+var lan_tab_btn: Button
+var webrtc_tab_btn: Button
+var sync_status_btn: Button
+var active_tab_style: StyleBoxFlat
+var inactive_tab_style: StyleBoxFlat
+
+
 func _init() -> void:
-	name = "LAN Sync"
+	name = "Sync Dashboard"
 
 	var scroll = ScrollContainer.new()
 	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 5)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	add_child(scroll)
 
-	var vbox = VBoxContainer.new()
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vbox)
+	var main_vbox = VBoxContainer.new()
+	main_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	main_vbox.add_theme_constant_override("separation", 10)
+	scroll.add_child(main_vbox)
 
-	# Status Label
+	# --- Title ---
+	var title_label = Label.new()
+	title_label.text = "Godot Team Create"
+	title_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	title_label.add_theme_font_size_override("font_size", 18)
+	main_vbox.add_child(title_label)
+
+	main_vbox.add_child(HSeparator.new())
+
+	# --- Panel Style ---
+	var panel_style = StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.15, 0.15, 0.15, 1.0) # Dark grey background
+	panel_style.corner_radius_top_left = 8
+	panel_style.corner_radius_top_right = 8
+	panel_style.corner_radius_bottom_left = 8
+	panel_style.corner_radius_bottom_right = 8
+	panel_style.content_margin_left = 10
+	panel_style.content_margin_right = 10
+	panel_style.content_margin_top = 10
+	panel_style.content_margin_bottom = 10
+
+	# --- Status & Users Panel ---
+	var status_panel = PanelContainer.new()
+	status_panel.add_theme_stylebox_override("panel", panel_style)
+	main_vbox.add_child(status_panel)
+
+	var status_vbox = VBoxContainer.new()
+	status_panel.add_child(status_vbox)
+
+	var status_header = Label.new()
+	status_header.text = "Status & Users"
+	status_header.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	status_vbox.add_child(status_header)
+
 	status_label = Label.new()
 	status_label.text = "Status: Disconnected"
 	status_label.add_theme_color_override("font_color", Color.GRAY)
-	vbox.add_child(status_label)
+	status_vbox.add_child(status_label)
 
-	# Users Label
 	users_label = RichTextLabel.new()
 	users_label.bbcode_enabled = true
 	users_label.text = "Users: 1"
 	users_label.fit_content = true
 	users_label.scroll_active = false
-	vbox.add_child(users_label)
+	status_vbox.add_child(users_label)
 
-	vbox.add_child(HSeparator.new())
+	# --- Profile Panel ---
+	var profile_panel = PanelContainer.new()
+	profile_panel.add_theme_stylebox_override("panel", panel_style)
+	main_vbox.add_child(profile_panel)
 
-	# Profile Section Header
-	var profile_label = Label.new()
-	profile_label.text = "Profile"
-	profile_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
-	vbox.add_child(profile_label)
+	var profile_vbox = VBoxContainer.new()
+	profile_panel.add_child(profile_vbox)
+
+	var profile_header = Label.new()
+	profile_header.text = "Profile"
+	profile_header.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	profile_vbox.add_child(profile_header)
 
 	username_edit = LineEdit.new()
 	username_edit.placeholder_text = "Display Name"
@@ -68,17 +115,61 @@ func _init() -> void:
 	username_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	username_edit.max_length = 15
 	username_edit.text_changed.connect(_on_username_changed)
-	vbox.add_child(username_edit)
+	profile_vbox.add_child(username_edit)
 
-	vbox.add_child(HSeparator.new())
+	# --- Connectivity Panel ---
+	var conn_panel = PanelContainer.new()
+	conn_panel.add_theme_stylebox_override("panel", panel_style)
+	main_vbox.add_child(conn_panel)
 
-	# LAN Section Header
-	var lan_label = Label.new()
-	lan_label.text = "LAN Connection"
-	lan_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
-	vbox.add_child(lan_label)
+	var conn_vbox = VBoxContainer.new()
+	conn_vbox.add_theme_constant_override("separation", 8)
+	conn_panel.add_child(conn_vbox)
 
-	# IP Edit
+	var conn_header = Label.new()
+	conn_header.text = "Connectivity"
+	conn_header.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	conn_vbox.add_child(conn_header)
+
+	var tab_hbox = HBoxContainer.new()
+	conn_vbox.add_child(tab_hbox)
+
+	active_tab_style = StyleBoxFlat.new()
+	active_tab_style.bg_color = Color(0.3, 0.3, 0.3, 1.0)
+	active_tab_style.corner_radius_top_left = 6
+	active_tab_style.corner_radius_top_right = 6
+	active_tab_style.corner_radius_bottom_left = 6
+	active_tab_style.corner_radius_bottom_right = 6
+
+	inactive_tab_style = StyleBoxFlat.new()
+	inactive_tab_style.bg_color = Color(0.15, 0.15, 0.15, 1.0)
+	inactive_tab_style.border_width_bottom = 2
+	inactive_tab_style.border_color = Color(0.3, 0.3, 0.3, 1.0)
+
+	lan_tab_btn = Button.new()
+	lan_tab_btn.text = "LAN"
+	lan_tab_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lan_tab_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	lan_tab_btn.add_theme_stylebox_override("normal", active_tab_style)
+	lan_tab_btn.add_theme_stylebox_override("hover", active_tab_style)
+	lan_tab_btn.add_theme_stylebox_override("pressed", active_tab_style)
+	lan_tab_btn.pressed.connect(_on_lan_tab_pressed)
+	tab_hbox.add_child(lan_tab_btn)
+
+	webrtc_tab_btn = Button.new()
+	webrtc_tab_btn.text = "WebRTC"
+	webrtc_tab_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	webrtc_tab_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	webrtc_tab_btn.add_theme_stylebox_override("normal", inactive_tab_style)
+	webrtc_tab_btn.add_theme_stylebox_override("hover", active_tab_style)
+	webrtc_tab_btn.add_theme_stylebox_override("pressed", active_tab_style)
+	webrtc_tab_btn.pressed.connect(_on_webrtc_tab_pressed)
+	tab_hbox.add_child(webrtc_tab_btn)
+
+	# LAN Container
+	lan_container = VBoxContainer.new()
+	conn_vbox.add_child(lan_container)
+
 	ip_edit = LineEdit.new()
 	ip_edit.text = "127.0.0.1"
 	ip_edit.placeholder_text = "Host IP Address (e.g., 127.0.0.1)"
@@ -86,11 +177,10 @@ func _init() -> void:
 	ip_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ip_edit.clear_button_enabled = true
 	ip_edit.select_all_on_focus = true
-	vbox.add_child(ip_edit)
+	lan_container.add_child(ip_edit)
 
-	# HBox for Host and Join buttons
-	var hbox = HBoxContainer.new()
-	vbox.add_child(hbox)
+	var lan_btn_hbox = HBoxContainer.new()
+	lan_container.add_child(lan_btn_hbox)
 
 	host_btn = Button.new()
 	host_btn.text = "Host"
@@ -98,7 +188,7 @@ func _init() -> void:
 	host_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	host_btn.pressed.connect(_on_host_pressed)
-	hbox.add_child(host_btn)
+	lan_btn_hbox.add_child(host_btn)
 
 	join_btn = Button.new()
 	join_btn.text = "Join"
@@ -106,70 +196,113 @@ func _init() -> void:
 	join_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	join_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	join_btn.pressed.connect(_on_join_pressed)
-	hbox.add_child(join_btn)
+	lan_btn_hbox.add_child(join_btn)
 
-	vbox.add_child(HSeparator.new())
+	# WebRTC Container
+	webrtc_container = VBoxContainer.new()
+	webrtc_container.hide() # Hidden by default
+	conn_vbox.add_child(webrtc_container)
 
-	# WebRTC Section Header
-	var webrtc_label = Label.new()
-	webrtc_label.text = "WebRTC Connection"
-	webrtc_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
-	vbox.add_child(webrtc_label)
-
-	# WebRTC UI
-	var webrtc_hbox = HBoxContainer.new()
-	vbox.add_child(webrtc_hbox)
+	var webrtc_btn_hbox = HBoxContainer.new()
+	webrtc_container.add_child(webrtc_btn_hbox)
 
 	webrtc_host_btn = Button.new()
-	webrtc_host_btn.text = "Host WebRTC"
+	webrtc_host_btn.text = "Host"
 	webrtc_host_btn.tooltip_text = "Start a WebRTC session and generate a connection offer."
 	webrtc_host_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	webrtc_host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	webrtc_host_btn.pressed.connect(_on_webrtc_host_pressed)
-	webrtc_hbox.add_child(webrtc_host_btn)
+	webrtc_btn_hbox.add_child(webrtc_host_btn)
 
 	webrtc_join_btn = Button.new()
-	webrtc_join_btn.text = "Join WebRTC"
+	webrtc_join_btn.text = "Join"
 	webrtc_join_btn.tooltip_text = "Join a WebRTC session and paste the host's offer below."
 	webrtc_join_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	webrtc_join_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	webrtc_join_btn.pressed.connect(_on_webrtc_join_pressed)
-	webrtc_hbox.add_child(webrtc_join_btn)
+	webrtc_btn_hbox.add_child(webrtc_join_btn)
+
+	webrtc_instructions = Label.new()
+	webrtc_instructions.text = "Click 'Host' or 'Join' to start."
+	webrtc_instructions.autowrap_mode = TextServer.AUTOWRAP_WORD
+	webrtc_instructions.add_theme_font_size_override("font_size", 12)
+	webrtc_instructions.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	webrtc_container.add_child(webrtc_instructions)
 
 	webrtc_text = TextEdit.new()
 	webrtc_text.custom_minimum_size = Vector2(0, 100)
 	webrtc_text.placeholder_text = "Paste WebRTC connection data here..."
 	webrtc_text.tooltip_text = "Copy/paste connection strings here to establish WebRTC peer connections."
 	webrtc_text.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	vbox.add_child(webrtc_text)
+	webrtc_container.add_child(webrtc_text)
 
 	webrtc_confirm_btn = Button.new()
 	webrtc_confirm_btn.text = "Confirm Connection Data"
 	webrtc_confirm_btn.tooltip_text = "Process the connection data pasted above."
 	webrtc_confirm_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	webrtc_confirm_btn.pressed.connect(_on_webrtc_confirm_pressed)
-	vbox.add_child(webrtc_confirm_btn)
+	webrtc_container.add_child(webrtc_confirm_btn)
 
-	# Disconnect Button
+	# Disconnect Button (shared at bottom of connectivity)
+	var disconnect_style = StyleBoxFlat.new()
+	disconnect_style.bg_color = Color(0.15, 0.15, 0.15, 1.0)
+	disconnect_style.border_width_left = 1
+	disconnect_style.border_width_right = 1
+	disconnect_style.border_width_top = 1
+	disconnect_style.border_width_bottom = 1
+	disconnect_style.border_color = Color.INDIAN_RED
+	disconnect_style.corner_radius_top_left = 6
+	disconnect_style.corner_radius_top_right = 6
+	disconnect_style.corner_radius_bottom_left = 6
+	disconnect_style.corner_radius_bottom_right = 6
+
 	disconnect_btn = Button.new()
 	disconnect_btn.text = "Disconnect"
 	disconnect_btn.tooltip_text = "Disconnect from the current session."
 	disconnect_btn.disabled = true
 	disconnect_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	disconnect_btn.add_theme_color_override("font_color", Color.INDIAN_RED)
+	disconnect_btn.add_theme_color_override("font_disabled_color", Color(0.5, 0.2, 0.2))
+	disconnect_btn.add_theme_stylebox_override("normal", disconnect_style)
 	disconnect_btn.pressed.connect(_on_disconnect_pressed)
-	vbox.add_child(disconnect_btn)
+	conn_vbox.add_child(disconnect_btn)
 
-	vbox.add_child(HSeparator.new())
+	# --- Synchronization Panel ---
+	var sync_panel = PanelContainer.new()
+	sync_panel.add_theme_stylebox_override("panel", panel_style)
+	main_vbox.add_child(sync_panel)
 
-	# Action buttons
+	var sync_vbox = VBoxContainer.new()
+	sync_vbox.add_theme_constant_override("separation", 8)
+	sync_panel.add_child(sync_vbox)
+
+	var sync_header = Label.new()
+	sync_header.text = "Synchronization"
+	sync_header.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	sync_vbox.add_child(sync_header)
+
+	var sync_status_style = StyleBoxFlat.new()
+	sync_status_style.bg_color = Color(0.2, 0.3, 0.2, 1.0)
+	sync_status_style.corner_radius_top_left = 6
+	sync_status_style.corner_radius_top_right = 6
+	sync_status_style.corner_radius_bottom_left = 6
+	sync_status_style.corner_radius_bottom_right = 6
+
+	sync_status_btn = Button.new()
+	sync_status_btn.text = "✓ Up to date!"
+	sync_status_btn.add_theme_color_override("font_color", Color.LIGHT_GREEN)
+	sync_status_btn.add_theme_stylebox_override("normal", sync_status_style)
+	sync_status_btn.add_theme_stylebox_override("disabled", sync_status_style)
+	sync_status_btn.disabled = true
+	sync_vbox.add_child(sync_status_btn)
+
 	push_scene_btn = Button.new()
 	push_scene_btn.text = "Push Current Scene"
 	push_scene_btn.tooltip_text = "(Server only) Force push your currently active scene to all clients."
 	push_scene_btn.disabled = true
 	push_scene_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	push_scene_btn.pressed.connect(_on_push_scene_pressed)
-	vbox.add_child(push_scene_btn)
+	sync_vbox.add_child(push_scene_btn)
 
 	sync_settings_btn = Button.new()
 	sync_settings_btn.text = "Sync Project Settings"
@@ -177,31 +310,33 @@ func _init() -> void:
 	sync_settings_btn.disabled = true
 	sync_settings_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	sync_settings_btn.pressed.connect(_on_sync_settings_pressed)
-	vbox.add_child(sync_settings_btn)
+	sync_vbox.add_child(sync_settings_btn)
 
 	sync_files_btn = Button.new()
 	sync_files_btn.text = "Sync All Project Files"
 	sync_files_btn.tooltip_text = "Compare and sync all project files across the network."
 	sync_files_btn.disabled = true
+	sync_status_btn.text = "Not connected"
+	sync_status_btn.add_theme_color_override("font_color", Color.GRAY)
 	sync_files_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	sync_files_btn.pressed.connect(_on_sync_files_pressed)
-	vbox.add_child(sync_files_btn)
-
-	vbox.add_child(HSeparator.new())
-
-	update_btn = Button.new()
-	update_btn.text = "Check for Updates"
-	update_btn.tooltip_text = "Check GitHub for newer versions of the Godot Team Create plugin."
-	update_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	update_btn.pressed.connect(_on_update_pressed)
-	vbox.add_child(update_btn)
+	sync_vbox.add_child(sync_files_btn)
 
 	export_btn = Button.new()
 	export_btn.text = "Export Headless Server"
 	export_btn.tooltip_text = "Generate a standalone server build/scripts to host without the Godot editor."
 	export_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	export_btn.pressed.connect(_on_export_pressed)
-	vbox.add_child(export_btn)
+	sync_vbox.add_child(export_btn)
+
+	main_vbox.add_child(HSeparator.new())
+
+	update_btn = Button.new()
+	update_btn.text = "Check for Updates"
+	update_btn.tooltip_text = "Check GitHub for newer versions of the Godot Team Create plugin."
+	update_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	update_btn.pressed.connect(_on_update_pressed)
+	main_vbox.add_child(update_btn)
 
 	export_dialog = FileDialog.new()
 	export_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
@@ -209,6 +344,21 @@ func _init() -> void:
 	export_dialog.title = "Select Output Directory for Server Export"
 	export_dialog.dir_selected.connect(_on_export_dir_selected)
 	add_child(export_dialog)
+
+
+func _on_lan_tab_pressed() -> void:
+	lan_container.show()
+	webrtc_container.hide()
+
+	lan_tab_btn.add_theme_stylebox_override("normal", active_tab_style)
+	webrtc_tab_btn.add_theme_stylebox_override("normal", inactive_tab_style)
+
+func _on_webrtc_tab_pressed() -> void:
+	webrtc_container.show()
+	lan_container.hide()
+
+	webrtc_tab_btn.add_theme_stylebox_override("normal", active_tab_style)
+	lan_tab_btn.add_theme_stylebox_override("normal", inactive_tab_style)
 
 
 func _ready() -> void:
@@ -226,13 +376,15 @@ func set_connected(is_host: bool, connected_to_standalone: bool = false) -> void
 	webrtc_host_btn.disabled = true
 	webrtc_join_btn.disabled = true
 	webrtc_confirm_btn.disabled = true
-	webrtc_host_btn.text = "Host WebRTC"
-	webrtc_join_btn.text = "Join WebRTC"
+	webrtc_host_btn.text = "Host"
+	webrtc_join_btn.text = "Join"
 	webrtc_mode = 0
 	disconnect_btn.disabled = false
 	push_scene_btn.disabled = false
 	sync_settings_btn.disabled = false
 	sync_files_btn.disabled = false
+	sync_status_btn.text = "✓ Up to date!"
+	sync_status_btn.add_theme_color_override("font_color", Color.LIGHT_GREEN)
 
 	if is_host:
 		status_label.text = "Status: Peer Host Connected"
@@ -251,15 +403,17 @@ func set_disconnected() -> void:
 	webrtc_join_btn.disabled = false
 	webrtc_confirm_btn.disabled = false
 	webrtc_confirm_btn.text = "Confirm Connection Data"
-	webrtc_host_btn.text = "Host WebRTC"
-	webrtc_join_btn.text = "Join WebRTC"
+	webrtc_host_btn.text = "Host"
+	webrtc_join_btn.text = "Join"
 	webrtc_mode = 0
 	disconnect_btn.disabled = true
 	push_scene_btn.disabled = true
 	sync_settings_btn.disabled = true
 	sync_files_btn.disabled = true
+	sync_status_btn.text = "Not connected"
+	sync_status_btn.add_theme_color_override("font_color", Color.GRAY)
 
-	update_webrtc_instructions("Click 'Host WebRTC' or 'Join WebRTC' to start.")
+	update_webrtc_instructions("Click 'Host' or 'Join' to start.")
 	update_webrtc_text("")
 
 	status_label.text = "Status: Disconnected"
