@@ -141,8 +141,9 @@ func _on_connected_to_server():
 			file_sync.sync_completed.connect(_request_scene_from_server, CONNECT_ONE_SHOT)
 
 	# Send local username request if not server
-	if not is_server and _local_username != "":
-		rpc_id(1, "request_username_change", multiplayer.get_unique_id(), _local_username)
+	if _local_username != "":
+		if not is_server:
+			rpc_id(1, "request_username_change", multiplayer.get_unique_id(), _local_username)
 
 func _request_scene_from_server():
 	if plugin:
