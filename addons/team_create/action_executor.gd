@@ -1,7 +1,7 @@
-class_name TeamCreateActionExecutor
+
 extends RefCounted
 
-static func execute(action: TeamCreateAction, current_scene: Node, network: Node, scene_path: String) -> bool:
+static func execute(action, current_scene: Node, network: Node, scene_path: String) -> bool:
     if current_scene.scene_file_path != scene_path and scene_path != "":
         return false
 
@@ -81,7 +81,7 @@ static func execute(action: TeamCreateAction, current_scene: Node, network: Node
             return false
     return false
 
-static func undo(action: TeamCreateAction, current_scene: Node, network: Node, scene_path: String) -> bool:
+static func undo(action, current_scene: Node, network: Node, scene_path: String) -> bool:
     if current_scene.scene_file_path != scene_path and scene_path != "":
         return false
 

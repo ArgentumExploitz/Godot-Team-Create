@@ -21,8 +21,8 @@ var _receiving_properties: Dictionary = {}
 var _receiving_scenes: Dictionary = {}
 var _receiving_scene_states: Dictionary = {}
 
-var TeamCreateAction = preload("res://addons/team_create/action.gd")
-var TeamCreateActionExecutor = preload("res://addons/team_create/action_executor.gd")
+const TeamCreateAction = preload("res://addons/team_create/action.gd")
+const TeamCreateActionExecutor = preload("res://addons/team_create/action_executor.gd")
 
 func _ready():
 	var tree = Engine.get_main_loop() as SceneTree
@@ -150,7 +150,7 @@ func _check_single_node_changes(node: Node):
 				last_props[prop_name] = current_props[prop_name]
 
 # ACTION DISPATCHING
-func _dispatch_action(action: TeamCreateAction, scene_path: String):
+func _dispatch_action(action: RefCounted, scene_path: String):
 	_pending_actions.append(action)
 	var dict = action.to_dict()
 	var bytes = var_to_bytes_with_objects(dict)

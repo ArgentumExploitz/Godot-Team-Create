@@ -1,4 +1,4 @@
-class_name TeamCreateAction
+
 extends RefCounted
 
 const TYPE_PROPERTY_CHANGE = "PROPERTY_CHANGE"
@@ -34,7 +34,7 @@ func to_dict() -> Dictionary:
         "inverse_payload": inverse_payload
     }
 
-static func from_dict(dict: Dictionary) -> TeamCreateAction:
+static func from_dict(dict: Dictionary) -> RefCounted:
     var action = TeamCreateAction.new(
         dict.get("client_id", 0),
         dict.get("target_path", ""),
