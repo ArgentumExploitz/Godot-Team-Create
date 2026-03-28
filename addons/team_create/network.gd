@@ -76,6 +76,8 @@ func disconnect_peer():
 	else:
 		if peer:
 			peer.close()
+	if scene_sync:
+		scene_sync.clear_all_peer_indicators()
 	multiplayer.multiplayer_peer = null
 	peers.clear()
 	_color_assignment_counter = 0
