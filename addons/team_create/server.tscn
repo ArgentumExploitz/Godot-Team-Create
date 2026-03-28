@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://teamcreateserver01"]
+
+[ext_resource type="Script" path="res://addons/team_create/server.gd" id="1_1"]
+
+[node name="Server" type="Node"]
+script = ExtResource("1_1")
