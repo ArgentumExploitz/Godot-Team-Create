@@ -124,6 +124,37 @@ config/features=PackedStringArray("4.3", "Forward Plus")
 enabled=PackedStringArray("res://addons/team_create/plugin.cfg")
 """
 
+const LINUX_SH_TEMPLATE = """#!/bin/bash
+# Team Create Linux Headless Server
+# This script launches the project in headless mode as a server.
+
+GODOT_EXEC="godot"
+
+if [ -f "./Godot_v4"*.x86_64 ]; then
+    GODOT_EXEC=$(ls -1 ./Godot_v4*.x86_64 | head -n 1)
+fi
+
+echo "Starting Team Create Server..."
+$GODOT_EXEC --path project --headless res://addons/team_create/server.tscn
+"""
+
+const WINDOWS_BAT_TEMPLATE = """@echo off
+:: Team Create Windows Headless Server
+:: This script launches the project in headless mode as a server.
+
+set GODOT_EXEC=godot.exe
+
+for %%f in (Godot_v4*.exe) do (
+    set GODOT_EXEC="%%f"
+    goto found
+)
+:found
+
+echo Starting Team Create Server...
+%GODOT_EXEC% --path project --headless res://addons/team_create/server.tscn
+pause
+"""
+
 static func copy_dir_recursive(from_path: String, to_path: String) -> void:
 	if not DirAccess.dir_exists_absolute(from_path):
 		return
@@ -149,6 +180,7 @@ static func copy_dir_recursive(from_path: String, to_path: String) -> void:
 		dir.list_dir_end()
 
 static func export_server(target_dir: String, caller_ui: Control) -> void:
+	target_dir = ProjectSettings.globalize_path(target_dir)
 	print("Exporting Standalone Server to: ", target_dir)
 	caller_ui.export_btn.text = "Exporting Server..."
 	caller_ui.export_btn.disabled = true
@@ -156,12 +188,8 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 	# Create a temporary project directory
 	var temp_dir = OS.get_user_data_dir() + "/team_create_server_export"
 	if DirAccess.dir_exists_absolute(temp_dir):
-		# Clean it up first
-		var d = DirAccess.open(temp_dir)
-		if d:
-			# Not full recursive delete implemented, just making sure it exists.
-			# Best to just create unique name or assume overwrite is fine.
-			pass
+		# Just rely on overwriting for now
+		pass
 	else:
 		DirAccess.make_dir_recursive_absolute(temp_dir)
 
@@ -194,18 +222,42 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 
 	var godot_exec = OS.get_executable_path()
 
-	print("Building Linux Server via OS.execute...")
+	print("Attempting to build Linux Server binary...")
 	var linux_args = ["--path", temp_dir, "--headless", "--export-release", "Linux/X11", target_dir + "/TeamCreateServer.x86_64"]
 	var linux_out = []
-	OS.execute(godot_exec, linux_args, linux_out, true)
+	var linux_exit = OS.execute(godot_exec, linux_args, linux_out, true)
 	print(linux_out)
 
-	print("Building Windows Server via OS.execute...")
+	print("Attempting to build Windows Server binary...")
 	var win_args = ["--path", temp_dir, "--headless", "--export-release", "Windows Desktop", target_dir + "/TeamCreateServer.exe"]
 	var win_out = []
-	OS.execute(godot_exec, win_args, win_out, true)
+	var win_exit = OS.execute(godot_exec, win_args, win_out, true)
 	print(win_out)
 
-	print("Export complete! Built executables in: " + target_dir)
+	# If both exports failed, it's highly likely the user does not have export templates installed for Godot.
+	# We should fallback by copying the raw project files into their target directory along with launcher scripts.
+	if linux_exit != 0 and win_exit != 0:
+		print("Export templates likely missing. Falling back to script wrappers...")
+		var target_project_dir = target_dir + "/project"
+		DirAccess.make_dir_recursive_absolute(target_project_dir)
+		copy_dir_recursive(temp_dir, target_project_dir)
+
+		var linux_sh = FileAccess.open(target_dir + "/start_server.sh", FileAccess.WRITE)
+		if linux_sh:
+			linux_sh.store_string(LINUX_SH_TEMPLATE)
+			linux_sh.close()
+
+		var win_bat = FileAccess.open(target_dir + "/start_server.bat", FileAccess.WRITE)
+		if win_bat:
+			win_bat.store_string(WINDOWS_BAT_TEMPLATE)
+			win_bat.close()
+
+		print("Fallback generated script wrappers and project bundle in: " + target_dir)
+
+		# Optional: Tell the user via OS Alert
+		# OS.alert("Export templates not found. A standalone project with script wrappers was generated instead.", "Export Warning")
+	else:
+		print("Export complete! Built executables in: " + target_dir)
+
 	caller_ui.export_btn.text = "Export Headless Server"
 	caller_ui.export_btn.disabled = false
