@@ -985,6 +985,18 @@ func _clear_peer_cursor_2d(peer_id: int, current_scene: Node):
 	for node in current_scene.get_tree().get_nodes_in_group("TeamCreateCursor2D_" + str(peer_id)):
 		if is_instance_valid(node): node.queue_free()
 
+func _update_cursor_username(peer_id: int, username: String):
+	var editor = network.plugin.get_editor_interface()
+	var current_scene = editor.get_edited_scene_root()
+	if not current_scene: return
+	var tree = current_scene.get_tree()
+	if not tree: return
+	var nodes = tree.get_nodes_in_group("TeamCreateCursor3D_" + str(peer_id))
+	for node in nodes:
+		if is_instance_valid(node):
+			for child in node.get_children():
+				if child is Label3D:
+					child.text = username
 
 func _find_editor_viewport(node: Node, type_name: String) -> Node:
 	if node.get_class() == type_name:
