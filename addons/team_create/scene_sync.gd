@@ -142,7 +142,7 @@ func _check_single_node_changes(node: Node):
 	for p in props:
 		# Filter for export or essential properties
 		if p.usage & PROPERTY_USAGE_EDITOR or p.name == "transform" or p.name == "name":
-			if p.name == "script" or p.name.begins_with("metadata/"):
+			if p.name.begins_with("metadata/"):
 				continue
 			var val = node.get(p.name)
 			if typeof(val) == TYPE_OBJECT:
@@ -383,7 +383,7 @@ func _sync_all_node_properties(node: Node, id: String):
 
 	for p in props:
 		if p.usage & PROPERTY_USAGE_EDITOR or p.name == "transform" or p.name == "name":
-			if p.name == "script" or p.name.begins_with("metadata/"):
+			if p.name.begins_with("metadata/"):
 				continue
 
 			var val = node.get(p.name)
@@ -603,8 +603,8 @@ func update_node_property_chunked(id: String, prop_name: String, chunk: PackedBy
 
 @rpc("any_peer", "reliable")
 func update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
-	# Block scripts and metadata updates for security
-	if prop_name == "script" or prop_name.begins_with("metadata/"):
+	# Block metadata updates for security
+	if prop_name.begins_with("metadata/"):
 		printerr("Team Create: Blocked unsafe property sync: ", prop_name)
 		return
 	var editor = network.plugin.get_editor_interface()
