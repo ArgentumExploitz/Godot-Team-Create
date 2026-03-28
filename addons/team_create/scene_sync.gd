@@ -985,6 +985,21 @@ func _clear_peer_cursor_2d(peer_id: int, current_scene: Node):
 	for node in current_scene.get_tree().get_nodes_in_group("TeamCreateCursor2D_" + str(peer_id)):
 		if is_instance_valid(node): node.queue_free()
 
+func clear_all_peer_indicators():
+	var editor = network.plugin.get_editor_interface()
+	var current_scene = editor.get_edited_scene_root()
+	if not current_scene:
+		return
+
+	var tree = current_scene.get_tree()
+	if tree:
+		for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
+			if is_instance_valid(node):
+				node.queue_free()
+		for node in tree.get_nodes_in_group("TeamCreateCursors"):
+			if is_instance_valid(node):
+				node.queue_free()
+
 func _update_cursor_username(peer_id: int, username: String):
 	var editor = network.plugin.get_editor_interface()
 	var current_scene = editor.get_edited_scene_root()
