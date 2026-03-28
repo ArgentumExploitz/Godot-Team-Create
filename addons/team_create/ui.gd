@@ -52,7 +52,7 @@ func _init() -> void:
 
 	# --- Title ---
 	var title_label = Label.new()
-	title_label.text = "Professional Project\nSync Dashboard"
+	title_label.text = "Godot Team Create"
 	title_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
 	title_label.add_theme_font_size_override("font_size", 18)
 	main_vbox.add_child(title_label)
