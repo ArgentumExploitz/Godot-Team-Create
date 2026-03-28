@@ -1050,9 +1050,9 @@ func _get_local_cursor_data() -> Dictionary:
 			result.has_2d = true
 			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
 			if current_scene and current_scene is Node2D:
-				result.pos_2d = current_scene.get_local_mouse_position()
+				result.pos_2d = current_scene.get_global_transform_with_canvas().affine_inverse() * mouse_pos
 			elif current_scene and current_scene is Control:
-				result.pos_2d = current_scene.get_local_mouse_position()
+				result.pos_2d = current_scene.get_global_transform_with_canvas().affine_inverse() * mouse_pos
 			else:
 				result.pos_2d = _cached_2d_viewport.get_global_mouse_position()
 
