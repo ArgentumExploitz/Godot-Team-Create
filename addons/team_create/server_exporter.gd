@@ -2,40 +2,68 @@
 extends Node
 
 const SERVER_SCRIPT_TEMPLATE = """extends Node
+
+class DummyEditorSettings:
+	func has_setting(name): return false
+	func get_setting(name): return ""
+	func set_setting(name, val): pass
+	func get_project_metadata(section, key, default): return default
+	func set_project_metadata(section, key, val): pass
+
+class DummyEditorFileSystem:
+	func is_scanning(): return false
+	func scan(): pass
+	func get_filesystem(): return self
+	func scan_sources(): pass
+	func update_file(path): pass
+
+class DummyEditorSelection:
+	func get_selected_nodes(): return []
+
 class DummyEditorInterface:
-	func get_editor_settings():
-		return self
-	func has_setting(name):
-		return false
-	func get_setting(name):
-		return ""
-	func set_setting(name, val):
-		pass
-	func get_resource_filesystem():
-		return self
-	func is_scanning():
-		return false
-	func scan():
-		pass
-	func get_edited_scene_root():
-		return null
+	var settings = DummyEditorSettings.new()
+	var efs = DummyEditorFileSystem.new()
+	var dummy_root = Node.new()
+	var dummy_selection = DummyEditorSelection.new()
+	var dummy_base = Control.new()
+
+	func _init():
+		dummy_root.name = "DummyRootScene"
+		dummy_root.set_meta("scene_file_path", "res://addons/team_create/server.tscn")
+
+	func get_editor_settings(): return settings
+	func get_resource_filesystem(): return efs
+	func get_edited_scene_root(): return dummy_root
+	func get_selection(): return dummy_selection
+	func get_base_control(): return dummy_base
+	func get_open_scenes(): return []
+
 	func get_editor_main_screen():
 		var n = Node.new()
 		n.name = "DummyMainScreen"
 		return n
-	func open_scene_from_path(path):
-		pass
-	func reload_scene_from_path(path):
-		pass
-	func save_scene():
-		pass
-	func mark_scene_as_unsaved():
-		pass
+	func open_scene_from_path(path): pass
+	func close_scene(): pass
+	func reload_scene_from_path(path): pass
+	func save_scene(): pass
+	func mark_scene_as_unsaved(): pass
+
+class DummyEditorUndoRedoManager:
+	func create_action(name, merge_mode=0, custom_context=null, undo_custom_context=false): pass
+	func add_do_property(object, property, value): pass
+	func add_undo_property(object, property, value): pass
+	func commit_action(execute=true): pass
 
 class DummyEditorPlugin extends Node:
 	var ei = DummyEditorInterface.new()
-	func get_editor_interface():
-		return ei
+	var dummy_undo_redo = DummyEditorUndoRedoManager.new()
+	func get_editor_interface(): return ei
+	func get_undo_redo(): return dummy_undo_redo
+	func add_control_to_dock(slot, control): pass
+	func remove_control_from_docks(control): pass
+	func download_update(): pass
+	func check_for_updates(): pass
+
 
 func _ready():
 	print("Starting Godot Team Create Headless Server...")
@@ -55,9 +83,11 @@ func _ready():
 	network.plugin = dummy_plugin
 	get_tree().root.call_deferred("add_child", network)
 
+	# Since DummyEditorInterface.dummy_root needs to be in the tree for get_tree() calls
+	get_tree().root.call_deferred("add_child", dummy_plugin.ei.dummy_root)
+
 	print("Hosting server on port ", network.PORT)
-	network.call_deferred("host_server")
-"""
+	network.call_deferred("host_server")"""
 
 const TSCN_TEMPLATE = """[gd_scene load_steps=2 format=3 uid="uid://teamcreateserver01"]
 
@@ -68,7 +98,7 @@ script = ExtResource("1_1")
 """
 
 const PRESETS_TEMPLATE = """
-[preset.tc_linux]
+[preset.{id1}]
 name="TeamCreate_Linux"
 platform="Linux/X11"
 runnable=true
@@ -84,13 +114,13 @@ encrypt_pck=false
 encrypt_directory=false
 script_export_mode=1
 
-[preset.tc_linux.options]
+[preset.{id1}.options]
 custom_template/debug=""
 custom_template/release=""
 debug/export_console_wrapper=1
 binary_format/embed_pck=false
 
-[preset.tc_windows]
+[preset.{id2}]
 name="TeamCreate_Windows"
 platform="Windows Desktop"
 runnable=true
@@ -106,7 +136,7 @@ encrypt_pck=false
 encrypt_directory=false
 script_export_mode=1
 
-[preset.tc_windows.options]
+[preset.{id2}.options]
 custom_template/debug=""
 custom_template/release=""
 debug/export_console_wrapper=1
@@ -233,13 +263,27 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 	# Modify Presets
 	var linux_export_path = target_dir + "/TeamCreateServer.x86_64"
 	var win_export_path = target_dir + "/TeamCreateServer.exe"
-	var presets_append = PRESETS_TEMPLATE.replace("{linux_path}", linux_export_path).replace("{windows_path}", win_export_path)
 
 	var original_presets = ""
+	var max_preset_id = -1
 	if FileAccess.file_exists(preset_path):
 		var f_preset_read = FileAccess.open(preset_path, FileAccess.READ)
 		original_presets = f_preset_read.get_as_text()
 		f_preset_read.close()
+
+		var lines = original_presets.split("\n")
+		for line in lines:
+			if line.begins_with("[preset.") and not ".options" in line:
+				var id_str = line.replace("[preset.", "").replace("]", "")
+				if id_str.is_valid_int():
+					var id = id_str.to_int()
+					if id > max_preset_id:
+						max_preset_id = id
+
+	var id1 = max_preset_id + 1
+	var id2 = max_preset_id + 2
+
+	var presets_append = PRESETS_TEMPLATE.replace("{id1}", str(id1)).replace("{id2}", str(id2)).replace("{linux_path}", linux_export_path).replace("{windows_path}", win_export_path)
 
 	var f_preset_write = FileAccess.open(preset_path, FileAccess.WRITE)
 	f_preset_write.store_string(original_presets + presets_append)
