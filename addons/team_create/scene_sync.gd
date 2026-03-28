@@ -810,7 +810,7 @@ func receive_scene_state(path: String, bytes: PackedByteArray, is_final: bool = 
 # Tracking cursor positions
 var _last_cursor_sync = 0.0
 const CURSOR_SYNC_INTERVAL = 0.05
-var _local_3d_cursor_pos: Vector3 = Vector3.ZERO
+var _local_3d_cursor_pos: Transform3D = Transform3D()
 var _local_2d_cursor_pos: Vector2 = Vector2.ZERO
 var _has_3d_cursor = false
 var _has_2d_cursor = false
@@ -833,7 +833,7 @@ func _sync_cursor_throttled(delta):
 
 
 @rpc("any_peer", "unreliable")
-func update_peer_cursor_3d(peer_id: int, pos: Vector3, scene_path: String = ""):
+func update_peer_cursor_3d(peer_id: int, pos: Transform3D, scene_path: String = ""):
 	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
 	if not current_scene or (scene_path != "" and current_scene.scene_file_path != scene_path):
 		_clear_peer_cursor(peer_id)
@@ -846,7 +846,7 @@ func update_peer_cursor_3d(peer_id: int, pos: Vector3, scene_path: String = ""):
 
 	var cursor = _get_or_create_peer_cursor_3d(peer_id, current_scene)
 	if cursor:
-		cursor.global_position = pos
+		cursor.global_transform = pos
 
 @rpc("any_peer", "unreliable")
 func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
@@ -873,15 +873,17 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	if nodes.size() > 0 and is_instance_valid(nodes[0]):
 		return nodes[0]
 
-	var cursor = MeshInstance3D.new()
+	var cursor = Node3D.new()
 	cursor.name = "TeamCreateCursor3D_" + str(peer_id)
 	cursor.add_to_group(group_name)
 	cursor.add_to_group("TeamCreateCursors")
 	cursor.set_meta("_edit_lock_", true)
 
+	# The ball
+	var sphere_mesh = MeshInstance3D.new()
 	var sphere = SphereMesh.new()
-	sphere.radius = 0.1
-	sphere.height = 0.2
+	sphere.radius = 0.2
+	sphere.height = 0.4
 
 	var mat = StandardMaterial3D.new()
 	var color = network.get_user_color(peer_id)
@@ -891,8 +893,42 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.no_depth_test = true
 
-	cursor.mesh = sphere
-	cursor.material_override = mat
+	sphere_mesh.mesh = sphere
+	sphere_mesh.material_override = mat
+	cursor.add_child(sphere_mesh)
+
+	# The line/cylinder connecting the ball to the cone
+	var stick_mesh = MeshInstance3D.new()
+	var stick = CylinderMesh.new()
+	stick.top_radius = 0.02
+	stick.bottom_radius = 0.02
+	stick.height = 0.4
+	stick_mesh.mesh = stick
+	stick_mesh.material_override = mat
+	stick_mesh.position.z = -0.3 # Stick out forwards (-Z)
+	stick_mesh.rotation.x = PI / 2.0
+	cursor.add_child(stick_mesh)
+
+	# The pointer arrow (cone)
+	var arrow_mesh = MeshInstance3D.new()
+	var arrow = CylinderMesh.new()
+	arrow.top_radius = 0.0
+	arrow.bottom_radius = 0.08
+	arrow.height = 0.3
+	arrow_mesh.mesh = arrow
+	arrow_mesh.material_override = mat
+	arrow_mesh.position.z = -0.65
+	arrow_mesh.rotation.x = PI / 2.0
+	cursor.add_child(arrow_mesh)
+
+	# The name tag
+	var label = Label3D.new()
+	label.text = network.peers[peer_id].username if network.peers.has(peer_id) else "Peer " + str(peer_id)
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.no_depth_test = true
+	label.position.y = 0.5
+	label.modulate = color
+	cursor.add_child(label)
 
 	current_scene.add_child(cursor)
 	return cursor
@@ -966,7 +1002,7 @@ var _cached_2d_viewport: Control = null
 var _cached_3d_camera: Camera3D = null
 
 func _get_local_cursor_data() -> Dictionary:
-	var result = {"has_3d": false, "pos_3d": Vector3.ZERO, "has_2d": false, "pos_2d": Vector2.ZERO}
+	var result = {"has_3d": false, "pos_3d": Transform3D(), "has_2d": false, "pos_2d": Vector2.ZERO}
 	var main_screen = network.plugin.get_editor_interface().get_editor_main_screen()
 	if not is_instance_valid(main_screen) or not main_screen.is_inside_tree(): return result
 
@@ -984,13 +1020,9 @@ func _get_local_cursor_data() -> Dictionary:
 		if is_instance_valid(cam):
 			var viewport = cam.get_viewport()
 			if viewport:
-				var mouse_pos = viewport.get_mouse_position()
-				var rect = Rect2(Vector2.ZERO, viewport.size)
-				if rect.has_point(mouse_pos):
-					var origin = cam.project_ray_origin(mouse_pos)
-					var normal = cam.project_ray_normal(mouse_pos)
-					result.has_3d = true
-					result.pos_3d = origin + normal * 10.0
+				# Use the camera's global transform for the 3D cursor
+				result.has_3d = true
+				result.pos_3d = cam.global_transform
 
 	# Try 2D
 	if is_instance_valid(_cached_2d_viewport) and _cached_2d_viewport.is_visible_in_tree():
