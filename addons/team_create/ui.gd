@@ -7,6 +7,7 @@ var network: Node
 var status_label: Label
 var users_label: RichTextLabel
 var ip_edit: LineEdit
+var username_edit: LineEdit
 var host_btn: Button
 var join_btn: Button
 var disconnect_btn: Button
@@ -48,6 +49,22 @@ func _init() -> void:
 	users_label.fit_content = true
 	users_label.scroll_active = false
 	vbox.add_child(users_label)
+
+	vbox.add_child(HSeparator.new())
+
+	# Profile Section Header
+	var profile_label = Label.new()
+	profile_label.text = "Profile"
+	profile_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	vbox.add_child(profile_label)
+
+	username_edit = LineEdit.new()
+	username_edit.placeholder_text = "Display Name"
+	username_edit.tooltip_text = "Your username across all projects. Max 15 characters."
+	username_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	username_edit.max_length = 15
+	username_edit.text_changed.connect(_on_username_changed)
+	vbox.add_child(username_edit)
 
 	vbox.add_child(HSeparator.new())
 
@@ -176,7 +193,13 @@ func _init() -> void:
 	vbox.add_child(update_btn)
 
 func _ready() -> void:
-	pass
+	if network and network.plugin:
+		var settings = network.plugin.get_editor_interface().get_editor_settings()
+		if settings.has_setting("team_create/username"):
+			var saved_name = settings.get_setting("team_create/username")
+			if saved_name != "":
+				username_edit.text = saved_name
+				_on_username_changed(saved_name)
 
 func set_connected(is_host: bool) -> void:
 	host_btn.disabled = true
@@ -234,6 +257,14 @@ func update_users_count(count: int) -> void:
 		users_label.text = text
 	else:
 		users_label.text = "Users: " + str(count)
+
+func _on_username_changed(new_text: String) -> void:
+	if network:
+		if network.plugin:
+			var settings = network.plugin.get_editor_interface().get_editor_settings()
+			settings.set_setting("team_create/username", new_text)
+
+		network.update_local_username(new_text)
 
 func _on_host_pressed() -> void:
 	if network:

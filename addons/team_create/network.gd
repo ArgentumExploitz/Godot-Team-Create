@@ -21,6 +21,7 @@ var is_webrtc = false
 var webrtc_candidates = []
 var local_sdp_type = ""
 var local_sdp = ""
+var _local_username = ""
 
 func _ready():
 	name = "TeamCreateNetwork"
@@ -42,6 +43,12 @@ func _ready():
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
+
+func update_local_username(new_name: String):
+	_local_username = new_name
+	var my_id = multiplayer.get_unique_id()
+	if multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		rpc_id(1, "request_username_change", my_id, _local_username)
 
 func host_server():
 	peer.create_server(PORT, MAX_CLIENTS)
@@ -130,6 +137,10 @@ func _on_connected_to_server():
 		if not file_sync.sync_completed.is_connected(_request_scene_from_server):
 			file_sync.sync_completed.connect(_request_scene_from_server, CONNECT_ONE_SHOT)
 
+	# Send local username request if not server
+	if not is_server and _local_username != "":
+		rpc_id(1, "request_username_change", multiplayer.get_unique_id(), _local_username)
+
 func _request_scene_from_server():
 	if plugin:
 		var efs = plugin.get_editor_interface().get_resource_filesystem()
@@ -147,8 +158,21 @@ func sync_peer_info(id: int, info: Dictionary):
 	if not is_server and multiplayer.get_remote_sender_id() != 1:
 		return
 	peers[id] = info
+
+	# Update 3D cursor labels if username changed
+	if scene_sync and scene_sync.has_method("_update_cursor_username"):
+		scene_sync._update_cursor_username(id, info["username"])
 	if ui:
 		ui.update_users_count(peers.size())
+
+@rpc("any_peer", "reliable")
+func request_username_change(id: int, new_username: String):
+	if is_server:
+		if peers.has(id) and (multiplayer.get_remote_sender_id() == id or multiplayer.get_remote_sender_id() == 0):
+			peers[id]["username"] = new_username
+			rpc("sync_peer_info", id, peers[id])
+			# Server updates its own
+			sync_peer_info(id, peers[id])
 
 func _on_connection_failed():
 	print("Connection to server failed.")
@@ -237,7 +261,7 @@ func _generate_peer_info(id: int) -> Dictionary:
 
 	var adjectives = ["Fast", "Cool", "Smart", "Brave", "Wild", "Quick", "Sly", "Bold"]
 	var nouns = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
-	var username = adjectives[rng.randi() % adjectives.size()] + nouns[rng.randi() % nouns.size()] + str(rng.randi() % 100)
+	var username = _local_username if id == 1 and _local_username != "" else adjectives[rng.randi() % adjectives.size()] + nouns[rng.randi() % nouns.size()] + str(rng.randi() % 100)
 	return {"username": username, "color": color}
 
 func _get_default_peer_info(id: int) -> Dictionary:
@@ -246,7 +270,7 @@ func _get_default_peer_info(id: int) -> Dictionary:
 	var color = Color.from_hsv(rng.randf(), 0.8, 0.9)
 	var adjectives = ["Fast", "Cool", "Smart", "Brave", "Wild", "Quick", "Sly", "Bold"]
 	var nouns = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
-	var username = adjectives[rng.randi() % adjectives.size()] + nouns[rng.randi() % nouns.size()] + str(rng.randi() % 100)
+	var username = _local_username if id == multiplayer.get_unique_id() and _local_username != "" else adjectives[rng.randi() % adjectives.size()] + nouns[rng.randi() % nouns.size()] + str(rng.randi() % 100)
 	return {"username": username, "color": color}
 
 # User Info management
