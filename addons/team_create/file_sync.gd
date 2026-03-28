@@ -69,6 +69,11 @@ func _on_filesystem_changed():
 func sync_project_settings():
 	if multiplayer.is_server():
 		var bytes = FileAccess.get_file_as_bytes("res://project.godot")
+		if network and network.get("is_standalone_server"):
+			var text = bytes.get_string_from_utf8()
+			text = text.replace("run/main_scene=\"res://addons/team_create/server.tscn\"", "")
+			text = text.replace("run/main_scene.teamcreateserver=\"res://addons/team_create/server.tscn\"", "")
+			bytes = text.to_utf8_buffer()
 		if bytes:
 			rpc("receive_project_settings", bytes)
 
