@@ -882,8 +882,8 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	# The ball
 	var sphere_mesh = MeshInstance3D.new()
 	var sphere = SphereMesh.new()
-	sphere.radius = 0.1
-	sphere.height = 0.2
+	sphere.radius = 0.2
+	sphere.height = 0.4
 
 	var mat = StandardMaterial3D.new()
 	var color = network.get_user_color(peer_id)
@@ -901,8 +901,8 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	# The line/cylinder connecting the ball to the cone
 	var stick_mesh = MeshInstance3D.new()
 	var stick = CylinderMesh.new()
-	stick.top_radius = 0.01
-	stick.bottom_radius = 0.01
+	stick.top_radius = 0.02
+	stick.bottom_radius = 0.02
 	stick.height = 0.2
 	stick_mesh.mesh = stick
 	stick_mesh.material_override = mat
@@ -914,7 +914,7 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	var arrow_mesh = MeshInstance3D.new()
 	var arrow = CylinderMesh.new()
 	arrow.top_radius = 0.0
-	arrow.bottom_radius = 0.04
+	arrow.bottom_radius = 0.08
 	arrow.height = 0.15
 	arrow_mesh.mesh = arrow
 	arrow_mesh.material_override = mat
