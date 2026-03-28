@@ -8,6 +8,7 @@ var ui: Control
 var plugin: Node
 var peer = ENetMultiplayerPeer.new()
 var is_server = false
+var is_standalone_server = false
 var peers = {} # Dictionary mapping peer_id to user info (username, color)
 var _color_assignment_counter = 0
 var _assigned_colors = []
@@ -190,9 +191,12 @@ func _on_server_disconnected():
 
 func _update_ui_state():
 	if ui:
-		ui.set_connected(is_server)
+		var connected_to_standalone = false
+		if peers.has(1) and peers[1].has("is_standalone") and peers[1]["is_standalone"]:
+			connected_to_standalone = true
+		ui.set_connected(is_server, connected_to_standalone)
 		var username = get_username(multiplayer.get_unique_id())
-		var protocol = "WebRTC" if is_webrtc else "LAN"
+		var protocol = "WebRTC" if is_webrtc else ("Server" if connected_to_standalone else "LAN")
 		ui.status_label.text = "Status: " + username + " Connected (" + protocol + ")"
 		ui.update_users_count(peers.size())
 
@@ -268,7 +272,12 @@ func _generate_peer_info(id: int) -> Dictionary:
 	var adjectives = ["Fast", "Cool", "Smart", "Brave", "Wild", "Quick", "Sly", "Bold"]
 	var nouns = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
 	var username = _local_username if id == 1 and _local_username != "" else adjectives[rng.randi() % adjectives.size()] + nouns[rng.randi() % nouns.size()] + str(rng.randi() % 100)
-	return {"username": username, "color": color}
+	if id == 1 and is_standalone_server:
+		username = "Server"
+	var info = {"username": username, "color": color}
+	if id == 1 and is_standalone_server:
+		info["is_standalone"] = true
+	return info
 
 func _get_default_peer_info(id: int) -> Dictionary:
 	var rng = RandomNumberGenerator.new()

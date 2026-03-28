@@ -80,6 +80,7 @@ func _ready():
 
 	var network = network_script.new()
 	network.name = "TeamCreateNetwork"
+	network.is_standalone_server = true
 
 	var dummy_plugin = DummyEditorPlugin.new()
 	dummy_plugin.name = "DummyPlugin"
