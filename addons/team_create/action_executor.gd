@@ -1,5 +1,7 @@
 
+
 extends RefCounted
+const TeamCreateAction = preload("res://addons/team_create/action.gd")
 
 static func execute(action, current_scene: Node, network: Node, scene_path: String) -> bool:
     if current_scene.scene_file_path != scene_path and scene_path != "":

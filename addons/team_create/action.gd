@@ -35,7 +35,7 @@ func to_dict() -> Dictionary:
     }
 
 static func from_dict(dict: Dictionary) -> RefCounted:
-    var action = TeamCreateAction.new(
+    var action = new(
         dict.get("client_id", 0),
         dict.get("target_path", ""),
         dict.get("type", ""),
