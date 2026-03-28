@@ -214,24 +214,25 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 
 @rpc("any_peer", "reliable")
 func request_file(path: String):
+	var sender_id = multiplayer.get_remote_sender_id()
 	# Validate path to prevent directory traversal / arbitrary file read
 	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
 		printerr("Team Create: Unauthorized file access: ", path)
+		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true)
 		return
 	if not path.begins_with("res://") or ".." in path:
 		printerr("Invalid file path requested: ", path)
+		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true)
 		return
 
 	# Block requests for project.godot completely
 	if path == "res://project.godot":
-		var sender_id = multiplayer.get_remote_sender_id()
 		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true)
 		return
 
 	# Send file back
 	if FileAccess.file_exists(path):
 		var bytes = FileAccess.get_file_as_bytes(path)
-		var sender_id = multiplayer.get_remote_sender_id()
 		var chunk_size = 60000
 		var total_size = bytes.size()
 		var offset = 0
@@ -246,8 +247,9 @@ func request_file(path: String):
 			var is_final = (end_idx == total_size)
 			rpc_id(sender_id, "receive_file", path, chunk, is_final)
 			offset += chunk_size
+			if not is_final:
+				await get_tree().process_frame
 	else:
-		var sender_id = multiplayer.get_remote_sender_id()
 		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true)
 
 @rpc("any_peer", "reliable")

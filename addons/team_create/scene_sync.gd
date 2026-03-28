@@ -6,6 +6,66 @@ var _last_scene_path: String = ""
 var _last_tracked_properties = {}
 var _last_selected_ids = []
 var _time_since_sync = 0.0
+
+var _server_tracked_scenes = {}
+var _server_save_timer = 0.0
+
+func _get_target_scene(scene_path: String) -> Node:
+	var current_scene = _get_target_scene(scene_path)
+
+	if network.get("is_standalone_server"):
+		if scene_path == "":
+			return current_scene
+
+		if _server_tracked_scenes.has(scene_path):
+			var s = _server_tracked_scenes[scene_path]
+			if is_instance_valid(s):
+				return s
+			else:
+				_server_tracked_scenes.erase(scene_path)
+
+		if ResourceLoader.exists(scene_path):
+			var packed = load(scene_path)
+			if packed and packed is PackedScene:
+				var instance = packed.instantiate()
+				if instance:
+					instance.set_meta("scene_file_path", scene_path)
+					_server_tracked_scenes[scene_path] = instance
+					get_tree().root.add_child(instance)
+					return instance
+		return null
+	else:
+		return current_scene
+
+func _save_server_tracked_scenes():
+	if not network.get("is_standalone_server"):
+		return
+	for path in _server_tracked_scenes:
+		var scene_node = _server_tracked_scenes[path]
+		if is_instance_valid(scene_node):
+			# Temporarily remove outlines
+			var outlines = []
+			var tree = scene_node.get_tree()
+			if tree:
+				for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
+					if is_instance_valid(node) and node.is_ancestor_of(scene_node):
+						outlines.append({"node": node, "parent": node.get_parent()})
+				for node in tree.get_nodes_in_group("TeamCreateCursors"):
+					if is_instance_valid(node) and node.is_ancestor_of(scene_node):
+						outlines.append({"node": node, "parent": node.get_parent()})
+
+			for data in outlines:
+				data["parent"].remove_child(data["node"])
+
+			var packed = PackedScene.new()
+			if packed.pack(scene_node) == OK:
+				ResourceSaver.save(packed, path)
+				print("Server automatically saved tracked scene: ", path)
+
+			for data in outlines:
+				if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
+					data["parent"].add_child(data["node"])
+
 const SYNC_INTERVAL = 0.1 # Sync 10 times a second max
 
 # Tracking structure changes locally so we don't bounce events back and forth
@@ -76,6 +136,12 @@ func _on_node_tree_exiting(node: Node):
 		_pre_removal_paths[node.get_instance_id()] = {"id": network.assign_unique_id(node), "scene_path": scene_path, "root_node": root_node}
 
 func _process(delta):
+	if network and network.get("is_standalone_server"):
+		_server_save_timer += delta
+		if _server_save_timer >= 60.0:
+			_server_save_timer = 0.0
+			_save_server_tracked_scenes()
+
 	if not network or not network.plugin or not multiplayer.has_multiplayer_peer() or multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
 
@@ -92,9 +158,8 @@ func _process(delta):
 		if network and network.file_sync and pending.value in network.file_sync.downloading_files:
 			continue
 		if ResourceLoader.exists(pending.value):
-			var editor = network.plugin.get_editor_interface()
-			var current_scene = editor.get_edited_scene_root()
-			if current_scene and current_scene.scene_file_path == pending.scene_path:
+			var current_scene = _get_target_scene(pending.scene_path)
+			if current_scene and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) == pending.scene_path:
 				var node = network.get_node_by_unique_id(current_scene, pending.id)
 				if is_instance_valid(node):
 					var res = load(pending.value)
@@ -107,8 +172,7 @@ func _process(delta):
 				_pending_resource_properties.remove_at(i)
 
 func _track_changes_throttled():
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 	if not current_scene:
 		return
 
@@ -182,8 +246,7 @@ func _track_selection():
 func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String = ""):
 	# Add custom selection drawing logic
 	var color = network.get_user_color(peer_id)
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 	if not current_scene:
 		return
 
@@ -195,7 +258,7 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 				node.queue_free()
 
 	# If the peer is selecting nodes in a different scene, we don't draw new indicators here.
-	if scene_path != "" and current_scene.scene_file_path != scene_path:
+	if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
 		return
 
 	# Add new indicators
@@ -250,8 +313,7 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 					node.add_child(outline)
 
 func clear_peer_selections(peer_id: int):
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 	if not current_scene:
 		return
 
@@ -284,6 +346,71 @@ func push_current_scene():
 						var is_final = (end_idx == total_size)
 						rpc("receive_scene", path, chunk, is_final)
 						offset += chunk_size
+
+func push_specific_scene_to_peer(scene_path: String, id: int):
+	if multiplayer.is_server():
+		var editor = network.plugin.get_editor_interface()
+		var current_scene = editor.get_edited_scene_root()
+
+		if not network.get("is_standalone_server"):
+			if current_scene and current_scene.scene_file_path == scene_path:
+				push_current_scene_to_peer(id)
+				return
+
+		# This is called on the standalone server. We pack the tracked scene or read from file.
+		if _server_tracked_scenes.has(scene_path):
+			var scene_node = _server_tracked_scenes[scene_path]
+			if is_instance_valid(scene_node):
+				# Temporarily remove outlines
+				var outlines = []
+				var tree = scene_node.get_tree()
+				if tree:
+					for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
+						if is_instance_valid(node) and node.is_ancestor_of(scene_node):
+							outlines.append({"node": node, "parent": node.get_parent()})
+					for node in tree.get_nodes_in_group("TeamCreateCursors"):
+						if is_instance_valid(node) and node.is_ancestor_of(scene_node):
+							outlines.append({"node": node, "parent": node.get_parent()})
+
+				for data in outlines:
+					data["parent"].remove_child(data["node"])
+
+				var packed = PackedScene.new()
+				if packed.pack(scene_node) == OK:
+					var temp_path = "user://temp_scene_state_server_" + str(id) + ".tscn"
+					if ResourceSaver.save(packed, temp_path) == OK:
+						if FileAccess.file_exists(temp_path):
+							var bytes = FileAccess.get_file_as_bytes(temp_path)
+							_send_scene_bytes_to_peer(scene_path, bytes, id)
+						DirAccess.remove_absolute(temp_path)
+
+				for data in outlines:
+					if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
+						data["parent"].add_child(data["node"])
+				return
+
+		# Fallback to disk
+		if FileAccess.file_exists(scene_path):
+			var bytes = FileAccess.get_file_as_bytes(scene_path)
+			_send_scene_bytes_to_peer(scene_path, bytes, id)
+
+func _send_scene_bytes_to_peer(path: String, bytes: PackedByteArray, id: int):
+	var chunk_size = 60000
+	var total_size = bytes.size()
+	var offset = 0
+
+	if total_size == 0:
+		rpc_id(id, "receive_scene", path, bytes, true)
+		return
+
+	while offset < total_size:
+		var end_idx = min(offset + chunk_size, total_size)
+		var chunk = bytes.slice(offset, end_idx)
+		var is_final = (end_idx == total_size)
+		rpc_id(id, "receive_scene", path, chunk, is_final)
+		offset += chunk_size
+		if not is_final:
+			await get_tree().process_frame
 
 func push_current_scene_to_peer(id: int):
 	if multiplayer.is_server():
@@ -335,8 +462,7 @@ func _on_node_added(node: Node):
 	if node.name.begins_with("@") or node.name.begins_with("TeamCreateSelectionOutline_") or node.name.begins_with("TeamCreateCursor"):
 		return
 
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 	if not current_scene:
 		return
 
@@ -496,10 +622,9 @@ func _on_node_renamed(node: Node):
 @rpc("any_peer", "reliable")
 func remote_node_added(parent_id: String, type: String, new_name: String, new_id: String, scene_path: String = ""):
 	_ignore_next_structure_event = true
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 	if current_scene:
-		if scene_path != "" and current_scene.scene_file_path != scene_path:
+		if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
 			_ignore_next_structure_event = false
 			return
 		var parent = network.get_node_by_unique_id(current_scene, parent_id)
@@ -518,10 +643,9 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 @rpc("any_peer", "reliable")
 func remote_node_removed(id: String, scene_path: String = ""):
 	_ignore_next_structure_event = true
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 	if current_scene:
-		if scene_path != "" and current_scene.scene_file_path != scene_path:
+		if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
 			_ignore_next_structure_event = false
 			return
 		var node = network.get_node_by_unique_id(current_scene, id)
@@ -541,10 +665,9 @@ func remote_node_renamed(new_id: String, new_name: String):
 @rpc("any_peer", "reliable")
 func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: String, scene_path: String = ""):
 	_ignore_next_structure_event = true
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 	if current_scene:
-		if scene_path != "" and current_scene.scene_file_path != scene_path:
+		if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
 			_ignore_next_structure_event = false
 			return
 		var parent = network.get_node_by_unique_id(current_scene, parent_id)
@@ -607,10 +730,9 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 	if prop_name.begins_with("metadata/"):
 		printerr("Team Create: Blocked unsafe property sync: ", prop_name)
 		return
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 	if current_scene:
-		if scene_path != "" and current_scene.scene_file_path != scene_path:
+		if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
 			return
 		var node = network.get_node_by_unique_id(current_scene, id)
 		if node:
@@ -683,42 +805,63 @@ func receive_scene(path: String, bytes: PackedByteArray, is_final: bool = true):
 	bytes = full_bytes
 
 	if network and network.plugin:
-		var editor = network.plugin.get_editor_interface()
-		var current_scene = editor.get_edited_scene_root()
-		var open_scenes = editor.get_open_scenes()
-
-		var is_active = false
-		if current_scene and current_scene.scene_file_path == path:
-			is_active = true
-
-		if is_active:
-			# 1. Write to disk and force reload
+		if network.get("is_standalone_server"):
 			if bytes.size() > 0:
 				var file = FileAccess.open(path, FileAccess.WRITE)
 				if file:
 					file.store_buffer(bytes)
 					file.close()
-			_is_reloading_scene = true
-			_force_full_sync_next_frame = true
 
-			editor.reload_scene_from_path(path)
-			print("Team Create: Applying received scene to active view.")
-
-			get_tree().create_timer(0.5).timeout.connect(func():
-				_is_reloading_scene = false
-			)
+			if _server_tracked_scenes.has(path):
+				var s = _server_tracked_scenes[path]
+				if is_instance_valid(s):
+					s.queue_free()
+				_server_tracked_scenes.erase(path)
+			var packed = load(path)
+			if packed and packed is PackedScene:
+				var instance = packed.instantiate()
+				if instance:
+					instance.set_meta("scene_file_path", path)
+					_server_tracked_scenes[path] = instance
+					get_tree().root.add_child(instance)
 			return
-		elif path in open_scenes:
-			# 2. Scene is open in tabs but not active ("closed" in the context of currently viewing)
-			# Switch to the tab, close it, and switch back
-			var prev_path = current_scene.scene_file_path if current_scene else ""
-			editor.open_scene_from_path(path)
-			editor.close_scene()
+		else:
+			var editor = network.plugin.get_editor_interface()
+			var current_scene = editor.get_edited_scene_root()
+			var open_scenes = editor.get_open_scenes()
 
-			if prev_path != "":
-				editor.open_scene_from_path(prev_path)
+			var is_active = false
+			if current_scene and current_scene.scene_file_path == path:
+				is_active = true
 
-			print("Team Create: Closed updated background scene tab: ", path)
+			if is_active:
+				# 1. Write to disk and force reload
+				if bytes.size() > 0:
+					var file = FileAccess.open(path, FileAccess.WRITE)
+					if file:
+						file.store_buffer(bytes)
+						file.close()
+				_is_reloading_scene = true
+				_force_full_sync_next_frame = true
+
+				editor.reload_scene_from_path(path)
+				print("Team Create: Applying received scene to active view.")
+
+				get_tree().create_timer(0.5).timeout.connect(func():
+					_is_reloading_scene = false
+				)
+				return
+			elif path in open_scenes:
+				# 2. Scene is open in tabs but not active ("closed" in the context of currently viewing)
+				# Switch to the tab, close it, and switch back
+				var prev_path = current_scene.scene_file_path if current_scene else ""
+				editor.open_scene_from_path(path)
+				editor.close_scene()
+
+				if prev_path != "":
+					editor.open_scene_from_path(prev_path)
+
+				print("Team Create: Closed updated background scene tab: ", path)
 
 	if bytes.size() > 0:
 		var file = FileAccess.open(path, FileAccess.WRITE)
@@ -732,10 +875,9 @@ func request_scene_state(scene_path: String):
 	if scene_path == "":
 		return
 
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_target_scene(scene_path)
 
-	if current_scene and current_scene.scene_file_path == scene_path:
+	if current_scene and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) == scene_path:
 		var sender_id = multiplayer.get_remote_sender_id()
 
 		# Temporarily remove selection outlines so they aren't packed
@@ -813,14 +955,30 @@ func receive_scene_state(path: String, bytes: PackedByteArray, is_final: bool = 
 			print("Team Create: Received up-to-date scene state for ", path)
 
 		if network and network.plugin:
-			var editor = network.plugin.get_editor_interface()
-			var current_scene = editor.get_edited_scene_root()
-			if current_scene and current_scene.scene_file_path == path:
-				_is_reloading_scene = true
-				editor.reload_scene_from_path(path)
-				get_tree().create_timer(0.5).timeout.connect(func():
-					_is_reloading_scene = false
-				)
+			if network.get("is_standalone_server"):
+				# Headless server just reloads the scene into memory
+				if _server_tracked_scenes.has(path):
+					var s = _server_tracked_scenes[path]
+					if is_instance_valid(s):
+						s.queue_free()
+					_server_tracked_scenes.erase(path)
+
+				var packed = load(path)
+				if packed and packed is PackedScene:
+					var instance = packed.instantiate()
+					if instance:
+						instance.set_meta("scene_file_path", path)
+						_server_tracked_scenes[path] = instance
+						get_tree().root.add_child(instance)
+			else:
+				var editor = network.plugin.get_editor_interface()
+				var current_scene = editor.get_edited_scene_root()
+				if current_scene and current_scene.scene_file_path == path:
+					_is_reloading_scene = true
+					editor.reload_scene_from_path(path)
+					get_tree().create_timer(0.5).timeout.connect(func():
+						_is_reloading_scene = false
+					)
 
 
 # Tracking cursor positions
@@ -850,8 +1008,8 @@ func _sync_cursor_throttled(delta):
 
 @rpc("any_peer", "unreliable")
 func update_peer_cursor_3d(peer_id: int, pos: Transform3D, scene_path: String = ""):
-	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
-	if not current_scene or (scene_path != "" and current_scene.scene_file_path != scene_path):
+	var current_scene = _get_target_scene(scene_path)
+	if not current_scene or (scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path):
 		_clear_peer_cursor(peer_id)
 		return
 
@@ -866,8 +1024,8 @@ func update_peer_cursor_3d(peer_id: int, pos: Transform3D, scene_path: String = 
 
 @rpc("any_peer", "unreliable")
 func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
-	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
-	if not current_scene or (scene_path != "" and current_scene.scene_file_path != scene_path):
+	var current_scene = _get_target_scene(scene_path)
+	if not current_scene or (scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path):
 		_clear_peer_cursor(peer_id)
 		return
 
@@ -1017,8 +1175,7 @@ func clear_all_peer_indicators():
 				node.queue_free()
 
 func _update_cursor_username(peer_id: int, username: String):
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
 	if not current_scene: return
 	var tree = current_scene.get_tree()
 	if not tree: return
