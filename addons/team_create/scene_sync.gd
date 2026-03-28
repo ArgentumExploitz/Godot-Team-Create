@@ -895,6 +895,7 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 
 	sphere_mesh.mesh = sphere
 	sphere_mesh.material_override = mat
+	sphere_mesh.position.z = 0.9
 	cursor.add_child(sphere_mesh)
 
 	# The line/cylinder connecting the ball to the cone
@@ -905,8 +906,8 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	stick.height = 0.4
 	stick_mesh.mesh = stick
 	stick_mesh.material_override = mat
-	stick_mesh.position.z = -0.3 # Stick out forwards (-Z)
-	stick_mesh.rotation.x = PI / 2.0
+	stick_mesh.position.z = 0.5
+	stick_mesh.rotation.x = -PI / 2.0
 	cursor.add_child(stick_mesh)
 
 	# The pointer arrow (cone)
@@ -917,8 +918,8 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	arrow.height = 0.3
 	arrow_mesh.mesh = arrow
 	arrow_mesh.material_override = mat
-	arrow_mesh.position.z = -0.65
-	arrow_mesh.rotation.x = PI / 2.0
+	arrow_mesh.position.z = 0.15
+	arrow_mesh.rotation.x = -PI / 2.0
 	cursor.add_child(arrow_mesh)
 
 	# The name tag
@@ -927,6 +928,7 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.no_depth_test = true
 	label.position.y = 0.5
+	label.position.z = 0.9
 	label.modulate = color
 	cursor.add_child(label)
 
