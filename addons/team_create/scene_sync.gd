@@ -865,7 +865,7 @@ func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
 		# Assuming pos is local to the canvas. In Godot 4 Editor, `event.position` from `_forward_canvas_gui_input` is
 		# actually in canvas coordinates? Wait, it's typically canvas coordinates if you handle it correctly.
 		# Let's set it to global_position of a Node2D
-		cursor.global_position = pos
+		cursor.position = pos
 
 func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	var group_name = "TeamCreateCursor3D_" + str(peer_id)
@@ -882,8 +882,8 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	# The ball
 	var sphere_mesh = MeshInstance3D.new()
 	var sphere = SphereMesh.new()
-	sphere.radius = 0.2
-	sphere.height = 0.4
+	sphere.radius = 0.1
+	sphere.height = 0.2
 
 	var mat = StandardMaterial3D.new()
 	var color = network.get_user_color(peer_id)
@@ -895,18 +895,18 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 
 	sphere_mesh.mesh = sphere
 	sphere_mesh.material_override = mat
-	sphere_mesh.position.z = 0.9
+	sphere_mesh.position.z = 0.45
 	cursor.add_child(sphere_mesh)
 
 	# The line/cylinder connecting the ball to the cone
 	var stick_mesh = MeshInstance3D.new()
 	var stick = CylinderMesh.new()
-	stick.top_radius = 0.02
-	stick.bottom_radius = 0.02
-	stick.height = 0.4
+	stick.top_radius = 0.01
+	stick.bottom_radius = 0.01
+	stick.height = 0.2
 	stick_mesh.mesh = stick
 	stick_mesh.material_override = mat
-	stick_mesh.position.z = 0.5
+	stick_mesh.position.z = 0.25
 	stick_mesh.rotation.x = -PI / 2.0
 	cursor.add_child(stick_mesh)
 
@@ -914,11 +914,11 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	var arrow_mesh = MeshInstance3D.new()
 	var arrow = CylinderMesh.new()
 	arrow.top_radius = 0.0
-	arrow.bottom_radius = 0.08
-	arrow.height = 0.3
+	arrow.bottom_radius = 0.04
+	arrow.height = 0.15
 	arrow_mesh.mesh = arrow
 	arrow_mesh.material_override = mat
-	arrow_mesh.position.z = 0.15
+	arrow_mesh.position.z = 0.075
 	arrow_mesh.rotation.x = -PI / 2.0
 	cursor.add_child(arrow_mesh)
 
@@ -927,8 +927,8 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	label.text = network.peers[peer_id].username if network.peers.has(peer_id) else "Peer " + str(peer_id)
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.no_depth_test = true
-	label.position.y = 0.5
-	label.position.z = 0.9
+	label.position.y = 0.25
+	label.position.z = 0.45
 	label.modulate = color
 	cursor.add_child(label)
 
@@ -952,16 +952,20 @@ func _get_or_create_peer_cursor_2d(peer_id: int, current_scene: Node) -> Node2D:
 	var poly = Polygon2D.new()
 	var color = network.get_user_color(peer_id)
 	poly.color = color
-	poly.color.a = 0.7
+	poly.color.a = 1.0
 	poly.polygon = PackedVector2Array([
 		Vector2(0, 0),
-		Vector2(15, 20),
-		Vector2(8, 20),
-		Vector2(12, 28),
-		Vector2(8, 30),
-		Vector2(2, 22),
-		Vector2(-4, 26)
+		Vector2(12, 12),
+		Vector2(5, 12),
+		Vector2(0, 17)
 	])
+
+	var outline = Line2D.new()
+	outline.points = poly.polygon
+	outline.closed = true
+	outline.width = 1.5
+	outline.default_color = Color(0.3, 0.3, 0.3, 0.8)
+	cursor.add_child(outline)
 
 	cursor.add_child(poly)
 	current_scene.add_child(cursor)
@@ -1034,9 +1038,9 @@ func _get_local_cursor_data() -> Dictionary:
 			result.has_2d = true
 			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
 			if current_scene and current_scene is Node2D:
-				result.pos_2d = current_scene.get_global_mouse_position()
+				result.pos_2d = current_scene.get_local_mouse_position()
 			elif current_scene and current_scene is Control:
-				result.pos_2d = current_scene.get_global_mouse_position()
+				result.pos_2d = current_scene.get_local_mouse_position()
 			else:
 				result.pos_2d = _cached_2d_viewport.get_global_mouse_position()
 
