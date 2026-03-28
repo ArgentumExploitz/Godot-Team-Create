@@ -4,6 +4,7 @@ extends Control
 var network: Node
 
 # UI Elements
+var status_panel: PanelContainer
 var status_label: Label
 var users_label: RichTextLabel
 var ip_edit: LineEdit
@@ -57,8 +58,6 @@ func _init() -> void:
 	title_label.add_theme_font_size_override("font_size", 18)
 	main_vbox.add_child(title_label)
 
-	main_vbox.add_child(HSeparator.new())
-
 	# --- Panel Style ---
 	var panel_style = StyleBoxFlat.new()
 	panel_style.bg_color = Color(0.15, 0.15, 0.15, 1.0) # Dark grey background
@@ -72,7 +71,7 @@ func _init() -> void:
 	panel_style.content_margin_bottom = 10
 
 	# --- Status & Users Panel ---
-	var status_panel = PanelContainer.new()
+	status_panel = PanelContainer.new()
 	status_panel.add_theme_stylebox_override("panel", panel_style)
 	main_vbox.add_child(status_panel)
 
@@ -88,6 +87,8 @@ func _init() -> void:
 	status_label.text = "Status: Disconnected"
 	status_label.add_theme_color_override("font_color", Color.GRAY)
 	status_vbox.add_child(status_label)
+
+	status_panel.hide()
 
 	users_label = RichTextLabel.new()
 	users_label.bbcode_enabled = true
@@ -386,14 +387,16 @@ func set_connected(is_host: bool, connected_to_standalone: bool = false) -> void
 	sync_status_btn.text = "✓ Up to date!"
 	sync_status_btn.add_theme_color_override("font_color", Color.LIGHT_GREEN)
 
+	status_panel.show()
+	var username = username_edit.text if username_edit.text != "" else "You"
 	if is_host:
-		status_label.text = "Status: Peer Host Connected"
+		status_label.text = "Status: " + username + " Connected (Host)"
 		status_label.add_theme_color_override("font_color", Color.GREEN)
 	else:
 		if connected_to_standalone:
 			status_label.text = "Status: Connected to Server"
 		else:
-			status_label.text = "Status: Peer Client Connected"
+			status_label.text = "Status: " + username + " Connected (Client)"
 		status_label.add_theme_color_override("font_color", Color.GREEN)
 
 func set_disconnected() -> void:
@@ -413,6 +416,7 @@ func set_disconnected() -> void:
 	sync_status_btn.text = "Not connected"
 	sync_status_btn.add_theme_color_override("font_color", Color.GRAY)
 
+	status_panel.hide()
 	update_webrtc_instructions("Click 'Host' or 'Join' to start.")
 	update_webrtc_text("")
 
