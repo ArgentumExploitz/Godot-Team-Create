@@ -225,33 +225,35 @@ func request_file(path: String):
 	# Block requests for project.godot completely
 	if path == "res://project.godot":
 		var sender_id = multiplayer.get_remote_sender_id()
-		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true)
+		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true, 0)
 		return
 
 	# Send file back
 	if FileAccess.file_exists(path):
 		var bytes = FileAccess.get_file_as_bytes(path)
 		var sender_id = multiplayer.get_remote_sender_id()
+		var transfer_id = randi()
 		var chunk_size = 60000
 		var total_size = bytes.size()
 		var offset = 0
 
 		if total_size == 0:
-			rpc_id(sender_id, "receive_file", path, bytes, true)
+			rpc_id(sender_id, "receive_file", path, bytes, true, 0)
 			return
 
 		while offset < total_size:
 			var end_idx = min(offset + chunk_size, total_size)
 			var chunk = bytes.slice(offset, end_idx)
 			var is_final = (end_idx == total_size)
-			rpc_id(sender_id, "receive_file", path, chunk, is_final)
+			await get_tree().process_frame
+			rpc_id(sender_id, "receive_file", path, chunk, is_final, transfer_id)
 			offset += chunk_size
 	else:
 		var sender_id = multiplayer.get_remote_sender_id()
-		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true)
+		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true, 0)
 
 @rpc("any_peer", "reliable")
-func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
+func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true, transfer_id: int = 0):
 	# Validate path to prevent directory traversal
 	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot") or path.begins_with("res://webrtc"):
 		printerr("Team Create: Unauthorized file access: ", path)
@@ -261,7 +263,7 @@ func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 		return
 
 	var sender_id = multiplayer.get_remote_sender_id()
-	var file_key = str(sender_id) + "_" + path
+	var file_key = str(sender_id) + "_" + str(transfer_id) + "_" + path
 	if not _receiving_files.has(file_key):
 		_receiving_files[file_key] = PackedByteArray()
 
