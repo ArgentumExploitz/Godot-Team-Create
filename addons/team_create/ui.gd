@@ -220,7 +220,7 @@ func _ready() -> void:
 				username_edit.text = saved_name
 				_on_username_changed(saved_name)
 
-func set_connected(is_host: bool) -> void:
+func set_connected(is_host: bool, connected_to_standalone: bool = false) -> void:
 	host_btn.disabled = true
 	join_btn.disabled = true
 	webrtc_host_btn.disabled = true
@@ -238,7 +238,10 @@ func set_connected(is_host: bool) -> void:
 		status_label.text = "Status: Peer Host Connected"
 		status_label.add_theme_color_override("font_color", Color.GREEN)
 	else:
-		status_label.text = "Status: Peer Client Connected"
+		if connected_to_standalone:
+			status_label.text = "Status: Connected to Server"
+		else:
+			status_label.text = "Status: Peer Client Connected"
 		status_label.add_theme_color_override("font_color", Color.GREEN)
 
 func set_disconnected() -> void:
@@ -265,8 +268,17 @@ func set_disconnected() -> void:
 
 func update_users_count(count: int) -> void:
 	if network:
-		var text = "Users: " + str(count) + "\n"
+		var visible_count = count
+		var has_standalone = false
+		if network.peers.has(1) and network.peers[1].has("is_standalone") and network.peers[1]["is_standalone"]:
+			has_standalone = true
+			visible_count -= 1
+
+		var text = "Users: " + str(visible_count) + "\n"
 		for peer_id in network.peers:
+			if peer_id == 1 and has_standalone:
+				continue
+
 			var username = network.get_username(peer_id)
 			var color = network.get_user_color(peer_id).to_html()
 			if peer_id == network.multiplayer.get_unique_id():
