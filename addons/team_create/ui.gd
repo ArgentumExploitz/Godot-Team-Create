@@ -24,6 +24,10 @@ var sync_files_btn: Button
 var update_btn: Button
 var webrtc_mode: int = 0
 
+var export_btn: Button
+var export_dialog: FileDialog
+
+
 func _init() -> void:
 	name = "LAN Sync"
 
@@ -192,6 +196,21 @@ func _init() -> void:
 	update_btn.pressed.connect(_on_update_pressed)
 	vbox.add_child(update_btn)
 
+	export_btn = Button.new()
+	export_btn.text = "Export Headless Server"
+	export_btn.tooltip_text = "Generate a standalone server build/scripts to host without the Godot editor."
+	export_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	export_btn.pressed.connect(_on_export_pressed)
+	vbox.add_child(export_btn)
+
+	export_dialog = FileDialog.new()
+	export_dialog.file_mode = FileDialog.FILE_MODE_OPEN_DIR
+	export_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	export_dialog.title = "Select Output Directory for Server Export"
+	export_dialog.dir_selected.connect(_on_export_dir_selected)
+	add_child(export_dialog)
+
+
 func _ready() -> void:
 	if network and network.plugin:
 		var settings = network.plugin.get_editor_interface().get_editor_settings()
@@ -344,3 +363,16 @@ func _on_update_pressed() -> void:
 			update_btn.text = "Checking..."
 			update_btn.disabled = true
 			network.plugin.check_for_updates()
+
+
+func _on_export_pressed() -> void:
+	if export_dialog:
+		export_dialog.popup_centered_ratio(0.5)
+
+func _on_export_dir_selected(dir: String) -> void:
+	if network and network.plugin:
+		var exporter_script = load("res://addons/team_create/server_exporter.gd")
+		if exporter_script:
+			exporter_script.export_server(dir, self)
+		else:
+			print("Failed to load server_exporter.gd")
