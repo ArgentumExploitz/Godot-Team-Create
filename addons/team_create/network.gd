@@ -48,7 +48,10 @@ func update_local_username(new_name: String):
 	_local_username = new_name
 	var my_id = multiplayer.get_unique_id()
 	if multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
-		rpc_id(1, "request_username_change", my_id, _local_username)
+		if is_server:
+			request_username_change(my_id, _local_username)
+		else:
+			rpc_id(1, "request_username_change", my_id, _local_username)
 
 func host_server():
 	peer.create_server(PORT, MAX_CLIENTS)
