@@ -127,7 +127,8 @@ func get_all_files(dir_path: String, exclude_dirs: Array = ["res://.godot", "res
 					if network and network.plugin:
 						network.plugin.get_editor_interface().get_resource_filesystem().scan()
 				else:
-					files.append(full_path)
+					if full_path != "res://project.godot":
+						files.append(full_path)
 			file_name = dir.get_next()
 	return files
 
@@ -172,6 +173,8 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 	# Request differing files
 	var files_to_request = []
 	for path in peer_hashes:
+		if path == "res://project.godot":
+			continue
 		if not local_hashes.has(path) or local_hashes[path] != peer_hashes[path]:
 			files_to_request.append(path)
 
@@ -214,6 +217,12 @@ func request_file(path: String):
 		printerr("Invalid file path requested: ", path)
 		return
 
+	# Block requests for project.godot completely
+	if path == "res://project.godot":
+		var sender_id = multiplayer.get_remote_sender_id()
+		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true)
+		return
+
 	# Send file back
 	if FileAccess.file_exists(path):
 		var bytes = FileAccess.get_file_as_bytes(path)
@@ -232,6 +241,9 @@ func request_file(path: String):
 			var is_final = (end_idx == total_size)
 			rpc_id(sender_id, "receive_file", path, chunk, is_final)
 			offset += chunk_size
+	else:
+		var sender_id = multiplayer.get_remote_sender_id()
+		rpc_id(sender_id, "receive_file", path, PackedByteArray(), true)
 
 @rpc("any_peer", "reliable")
 func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
@@ -338,14 +350,14 @@ func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 						network.plugin.get_editor_interface().get_resource_filesystem().scan()
 				)
 
-		downloading_files.erase(path)
-		if _pending_files_to_receive > 0:
-			_pending_files_to_receive -= 1
-			call_deferred("_update_sync_blocker")
-			if _pending_files_to_receive <= 0:
-				call_deferred("_hide_sync_blocker")
-				_known_files = get_all_files("res://")
-				sync_completed.emit()
+	downloading_files.erase(path)
+	if _pending_files_to_receive > 0:
+		_pending_files_to_receive -= 1
+		call_deferred("_update_sync_blocker")
+		if _pending_files_to_receive <= 0:
+			call_deferred("_hide_sync_blocker")
+			_known_files = get_all_files("res://")
+			sync_completed.emit()
 
 
 @rpc("any_peer", "reliable")
