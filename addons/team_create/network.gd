@@ -51,7 +51,7 @@ func update_local_username(new_name: String):
 	if multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 		if is_server:
 			request_username_change(my_id, _local_username)
-		else:
+		elif my_id != 1:
 			rpc_id(1, "request_username_change", my_id, _local_username)
 
 func host_server():
@@ -145,7 +145,7 @@ func _on_connected_to_server():
 
 	# Send local username request if not server
 	if _local_username != "":
-		if not is_server:
+		if not is_server and multiplayer.get_unique_id() != 1:
 			rpc_id(1, "request_username_change", multiplayer.get_unique_id(), _local_username)
 
 func _request_scene_from_server():
