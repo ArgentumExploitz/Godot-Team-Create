@@ -136,6 +136,13 @@ func receive_project_settings(bytes: PackedByteArray):
 	if multiplayer.get_remote_sender_id() != 1:
 		printerr("Unauthorized settings sync attempt")
 		return
+
+	# Only overwrite if contents actually changed to prevent editor reload loops
+	if FileAccess.file_exists("res://project.godot"):
+		var existing_bytes = FileAccess.get_file_as_bytes("res://project.godot")
+		if existing_bytes == bytes:
+			return
+
 	var file = FileAccess.open("res://project.godot", FileAccess.WRITE)
 	if file:
 		file.store_buffer(bytes)
@@ -306,11 +313,20 @@ func receive_file(path: String, bytes: PackedByteArray, is_final: bool = true):
 		DirAccess.make_dir_recursive_absolute(dir_path)
 
 	if bytes.size() > 0:
-		var file = FileAccess.open(path, FileAccess.WRITE)
-		if file:
-			file.store_buffer(bytes)
-			file.close()
-			print("Received file: ", path)
+		var should_write = true
+		if FileAccess.file_exists(path):
+			var existing_bytes = FileAccess.get_file_as_bytes(path)
+			if existing_bytes == bytes:
+				should_write = false
+
+		if should_write:
+			var file = FileAccess.open(path, FileAccess.WRITE)
+			if file:
+				file.store_buffer(bytes)
+				file.close()
+				print("Received and updated file: ", path)
+		else:
+			print("File unchanged, skipped writing: ", path)
 
 		# Trigger Editor resource scan if it's an asset, debounced to prevent premature imports generating new UIDs
 		if network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
