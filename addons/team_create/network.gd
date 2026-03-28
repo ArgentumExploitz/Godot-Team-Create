@@ -5,7 +5,7 @@ const PORT = 12345
 const MAX_CLIENTS = 10
 
 var ui: Control
-var plugin: EditorPlugin
+var plugin: Node
 var peer = ENetMultiplayerPeer.new()
 var is_server = false
 var peers = {} # Dictionary mapping peer_id to user info (username, color)
