@@ -149,28 +149,31 @@ const LINUX_SH_TEMPLATE = """#!/bin/bash
 
 GODOT_EXEC="godot"
 
-if [ -f "./Godot_v4"*.x86_64 ]; then
-    GODOT_EXEC=$(ls -1 ./Godot_v4*.x86_64 | head -n 1)
-fi
+for f in ./Godot_v4*linux*.x86_64 ./Godot_v4*.x86_64; do
+    if [ -f "$f" ]; then
+        GODOT_EXEC="$f"
+        break
+    fi
+done
 
 echo "Starting Team Create Server..."
-$GODOT_EXEC --path project --headless res://addons/team_create/server.tscn
+"$GODOT_EXEC" --path project --headless
 """
 
 const WINDOWS_BAT_TEMPLATE = """@echo off
 :: Team Create Windows Headless Server
 :: This script launches the project in headless mode as a server.
 
-set GODOT_EXEC=godot.exe
+set "GODOT_EXEC=godot.exe"
 
 for %%f in (Godot_v4*.exe) do (
-    set GODOT_EXEC="%%f"
+    set "GODOT_EXEC=%%f"
     goto found
 )
 :found
 
 echo Starting Team Create Server...
-%GODOT_EXEC% --path project --headless res://addons/team_create/server.tscn
+"%GODOT_EXEC%" --path project --headless
 pause
 """
 
@@ -291,6 +294,11 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 
 	var godot_exec = OS.get_executable_path()
 
+	print("Importing project assets in temporary directory...")
+	var import_args = ["--path", temp_project_dir, "--headless", "--editor", "--quit"]
+	var import_out = []
+	OS.execute(godot_exec, import_args, import_out, true)
+
 	print("Attempting to build Linux Server binary...")
 	var linux_args = ["--path", temp_project_dir, "--headless", "--export-release", "TeamCreate_Linux"]
 	var linux_out = []
@@ -303,9 +311,9 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 	var win_exit = OS.execute(godot_exec, win_args, win_out, true)
 	print("Exit Code: ", win_exit)
 
-	# If either export failed, the user lacks export templates for Godot.
+	# If both exports failed, the user likely lacks export templates for Godot.
 	# Fallback: Provide the raw headless project and script wrappers to run using the editor executable.
-	if linux_exit != 0 or win_exit != 0:
+	if linux_exit != 0 and win_exit != 0:
 		print("Export templates likely missing or export failed. Falling back to script wrappers...")
 		var target_project_dir = target_dir + "/project"
 
@@ -331,7 +339,12 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 
 		print("Fallback generated script wrappers and project bundle in: " + target_dir)
 	else:
-		print("Export complete! Built executables in: " + target_dir)
+		if linux_exit == 0 and win_exit != 0:
+			print("Linux export succeeded, but Windows failed. Built executables in: " + target_dir)
+		elif win_exit == 0 and linux_exit != 0:
+			print("Windows export succeeded, but Linux failed. Built executables in: " + target_dir)
+		else:
+			print("Export complete! Built executables in: " + target_dir)
 
 	caller_ui.export_btn.text = "Export Headless Server"
 	caller_ui.export_btn.disabled = false
