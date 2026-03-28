@@ -36,13 +36,6 @@ var sync_status_btn: Button
 var active_tab_style: StyleBoxFlat
 var inactive_tab_style: StyleBoxFlat
 
-var lan_container: VBoxContainer
-var webrtc_container: VBoxContainer
-var lan_tab_btn: Button
-var webrtc_tab_btn: Button
-var sync_status_btn: Button
-var active_tab_style: StyleBoxFlat
-var inactive_tab_style: StyleBoxFlat
 
 func _init() -> void:
 	name = "Sync Dashboard"
