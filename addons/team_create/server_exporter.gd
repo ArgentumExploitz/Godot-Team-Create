@@ -149,7 +149,7 @@ const LINUX_SH_TEMPLATE = """#!/bin/bash
 
 GODOT_EXEC="godot"
 
-for f in ./Godot_v4*linux*.x86_64 ./Godot_v4*.x86_64; do
+for f in ./TeamCreateServer.x86_64 ./Godot_v4*linux*.x86_64 ./Godot_v4*.x86_64; do
     if [ -f "$f" ]; then
         GODOT_EXEC="$f"
         break
@@ -166,9 +166,11 @@ const WINDOWS_BAT_TEMPLATE = """@echo off
 
 set "GODOT_EXEC=godot.exe"
 
-for %%f in (Godot_v4*.exe) do (
-    set "GODOT_EXEC=%%f"
-    goto found
+for %%f in (TeamCreateServer.exe Godot_v4*.exe) do (
+    if exist "%%f" (
+        set "GODOT_EXEC=%%f"
+        goto found
+    )
 )
 :found
 
@@ -316,40 +318,48 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 	var win_exit = OS.execute(godot_exec, win_args, win_out, true)
 	print("Exit Code: ", win_exit)
 
-	# If both exports failed, the user likely lacks export templates for Godot.
-	# Fallback: Provide the raw headless project and script wrappers to run using the editor executable.
+	# User prefers raw project directory rather than a hidden PCK.
+	# 1. ALWAYS clone temp_project_dir to target_dir/project
+	print("Bundling project directory...")
+	var target_project_dir = target_dir + "/project"
+	copy_dir_recursive(temp_project_dir, target_project_dir, [temp_project_dir + "/export_presets.cfg"])
+
+	# Patch target project.godot to make server.tscn the default main scene directly
+	var t_proj = FileAccess.open(target_project_dir + "/project.godot", FileAccess.READ_WRITE)
+	if t_proj:
+		t_proj.seek_end()
+		t_proj.store_string("\n[application]\nrun/main_scene=\"res://addons/team_create/server.tscn\"\n")
+		t_proj.close()
+
+	# 2. ALWAYS generate script wrappers
+	var linux_sh = FileAccess.open(target_dir + "/start_server.sh", FileAccess.WRITE)
+	if linux_sh:
+		linux_sh.store_string(LINUX_SH_TEMPLATE)
+		linux_sh.close()
+
+	var win_bat = FileAccess.open(target_dir + "/start_server.bat", FileAccess.WRITE)
+	if win_bat:
+		win_bat.store_string(WINDOWS_BAT_TEMPLATE)
+		win_bat.close()
+
+	# 3. Clean up the .pck files (we use the raw 'project' folder instead)
+	if FileAccess.file_exists(target_dir + "/TeamCreateServer.pck"):
+		DirAccess.remove_absolute(target_dir + "/TeamCreateServer.pck")
+	# In some Godot versions/platforms, the pck might be named with the binary extension
+	if FileAccess.file_exists(target_dir + "/TeamCreateServer.x86_64.pck"):
+		DirAccess.remove_absolute(target_dir + "/TeamCreateServer.x86_64.pck")
+
 	if linux_exit != 0 and win_exit != 0:
-		print("Export templates likely missing or export failed. Falling back to script wrappers...")
-		var target_project_dir = target_dir + "/project"
-
-		# Since the user might want a working project without export presets messing it up, we copy from temp_project_dir
-		copy_dir_recursive(temp_project_dir, target_project_dir, [temp_project_dir + "/export_presets.cfg"])
-
-		# Patch the target_project_dir's project.godot to make server.tscn the main scene completely
-		var t_proj = FileAccess.open(target_project_dir + "/project.godot", FileAccess.READ_WRITE)
-		if t_proj:
-			t_proj.seek_end()
-			t_proj.store_string("\n[application]\nrun/main_scene=\"res://addons/team_create/server.tscn\"\n")
-			t_proj.close()
-
-		var linux_sh = FileAccess.open(target_dir + "/start_server.sh", FileAccess.WRITE)
-		if linux_sh:
-			linux_sh.store_string(LINUX_SH_TEMPLATE)
-			linux_sh.close()
-
-		var win_bat = FileAccess.open(target_dir + "/start_server.bat", FileAccess.WRITE)
-		if win_bat:
-			win_bat.store_string(WINDOWS_BAT_TEMPLATE)
-			win_bat.close()
-
-		print("Fallback generated script wrappers and project bundle in: " + target_dir)
+		print("Export templates likely missing or export failed. Using fallback script wrappers with system Godot.")
 	else:
 		if linux_exit == 0 and win_exit != 0:
-			print("Linux export succeeded, but Windows failed. Built executables in: " + target_dir)
+			print("Linux export succeeded, but Windows failed. Standalone Linux server generated in: " + target_dir)
 		elif win_exit == 0 and linux_exit != 0:
-			print("Windows export succeeded, but Linux failed. Built executables in: " + target_dir)
+			print("Windows export succeeded, but Linux failed. Standalone Windows server generated in: " + target_dir)
 		else:
-			print("Export complete! Built executables in: " + target_dir)
+			print("Export complete! Standalone servers generated in: " + target_dir)
+
+	print("Run the server using start_server.sh or start_server.bat!")
 
 	caller_ui.export_btn.text = "Export Headless Server"
 	caller_ui.export_btn.disabled = false
