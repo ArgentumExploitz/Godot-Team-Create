@@ -97,59 +97,13 @@ const TSCN_TEMPLATE = """[gd_scene load_steps=2 format=3 uid="uid://teamcreatese
 script = ExtResource("1_1")
 """
 
-const PRESETS_TEMPLATE = """
-[preset.{id1}]
-name="TeamCreate_Linux"
-platform="Linux/X11"
-runnable=true
-dedicated_server=false
-custom_features="teamcreateserver"
-export_filter="all_resources"
-include_filter=""
-exclude_filter=""
-export_path="{linux_path}"
-encryption_include_filters=""
-encryption_exclude_filters=""
-encrypt_pck=false
-encrypt_directory=false
-script_export_mode=1
-
-[preset.{id1}.options]
-custom_template/debug=""
-custom_template/release=""
-debug/export_console_wrapper=1
-binary_format/embed_pck=false
-
-[preset.{id2}]
-name="TeamCreate_Windows"
-platform="Windows Desktop"
-runnable=true
-dedicated_server=false
-custom_features="teamcreateserver"
-export_filter="all_resources"
-include_filter=""
-exclude_filter=""
-export_path="{windows_path}"
-encryption_include_filters=""
-encryption_exclude_filters=""
-encrypt_pck=false
-encrypt_directory=false
-script_export_mode=1
-
-[preset.{id2}.options]
-custom_template/debug=""
-custom_template/release=""
-debug/export_console_wrapper=1
-binary_format/embed_pck=false
-"""
-
 const LINUX_SH_TEMPLATE = """#!/bin/bash
 # Team Create Linux Headless Server
 # This script launches the project in headless mode as a server.
 
 GODOT_EXEC="godot"
 
-for f in ./TeamCreateServer.x86_64 ./Godot_v4*linux*.x86_64 ./Godot_v4*.x86_64; do
+for f in ./Godot_v4*linux*.x86_64 ./Godot_v4*.x86_64; do
     if [ -f "$f" ]; then
         GODOT_EXEC="$f"
         break
@@ -166,7 +120,7 @@ const WINDOWS_BAT_TEMPLATE = """@echo off
 
 set "GODOT_EXEC=godot.exe"
 
-for %%f in (TeamCreateServer.exe Godot_v4*.exe) do (
+for %%f in (Godot_v4*.exe) do (
     if exist "%%f" (
         set "GODOT_EXEC=%%f"
         goto found
@@ -270,54 +224,6 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 		f_proj_append.store_string("\n[application]\nrun/main_scene.teamcreateserver=\"res://addons/team_create/server.tscn\"\n")
 		f_proj_append.close()
 
-	# Modify Presets
-	var linux_export_path = target_dir + "/TeamCreateServer.x86_64"
-	var win_export_path = target_dir + "/TeamCreateServer.exe"
-
-	var original_presets = ""
-	var max_preset_id = -1
-	if FileAccess.file_exists(preset_path):
-		var f_preset_read = FileAccess.open(preset_path, FileAccess.READ)
-		original_presets = f_preset_read.get_as_text()
-		f_preset_read.close()
-
-		var lines = original_presets.split("\n")
-		for line in lines:
-			if line.begins_with("[preset.") and not ".options" in line:
-				var id_str = line.replace("[preset.", "").replace("]", "")
-				if id_str.is_valid_int():
-					var id = id_str.to_int()
-					if id > max_preset_id:
-						max_preset_id = id
-
-	var id1 = max_preset_id + 1
-	var id2 = max_preset_id + 2
-
-	var presets_append = PRESETS_TEMPLATE.replace("{id1}", str(id1)).replace("{id2}", str(id2)).replace("{linux_path}", linux_export_path).replace("{windows_path}", win_export_path)
-
-	var f_preset_write = FileAccess.open(preset_path, FileAccess.WRITE)
-	f_preset_write.store_string(original_presets + presets_append)
-	f_preset_write.close()
-
-	var godot_exec = OS.get_executable_path()
-
-	print("Importing project assets in temporary directory...")
-	var import_args = ["--path", temp_project_dir, "--headless", "--editor", "--quit"]
-	var import_out = []
-	OS.execute(godot_exec, import_args, import_out, true)
-
-	print("Attempting to build Linux Server binary...")
-	var linux_args = ["--path", temp_project_dir, "--headless", "--export-release", "TeamCreate_Linux"]
-	var linux_out = []
-	var linux_exit = OS.execute(godot_exec, linux_args, linux_out, true)
-	print("Exit Code: ", linux_exit)
-
-	print("Attempting to build Windows Server binary...")
-	var win_args = ["--path", temp_project_dir, "--headless", "--export-release", "TeamCreate_Windows"]
-	var win_out = []
-	var win_exit = OS.execute(godot_exec, win_args, win_out, true)
-	print("Exit Code: ", win_exit)
-
 	# User prefers raw project directory rather than a hidden PCK.
 	# 1. ALWAYS clone temp_project_dir to target_dir/project
 	print("Bundling project directory...")
@@ -342,23 +248,7 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 		win_bat.store_string(WINDOWS_BAT_TEMPLATE)
 		win_bat.close()
 
-	# 3. Clean up the .pck files (we use the raw 'project' folder instead)
-	if FileAccess.file_exists(target_dir + "/TeamCreateServer.pck"):
-		DirAccess.remove_absolute(target_dir + "/TeamCreateServer.pck")
-	# In some Godot versions/platforms, the pck might be named with the binary extension
-	if FileAccess.file_exists(target_dir + "/TeamCreateServer.x86_64.pck"):
-		DirAccess.remove_absolute(target_dir + "/TeamCreateServer.x86_64.pck")
-
-	if linux_exit != 0 and win_exit != 0:
-		print("Export templates likely missing or export failed. Using fallback script wrappers with system Godot.")
-	else:
-		if linux_exit == 0 and win_exit != 0:
-			print("Linux export succeeded, but Windows failed. Standalone Linux server generated in: " + target_dir)
-		elif win_exit == 0 and linux_exit != 0:
-			print("Windows export succeeded, but Linux failed. Standalone Windows server generated in: " + target_dir)
-		else:
-			print("Export complete! Standalone servers generated in: " + target_dir)
-
+	print("Export complete! Project bundled in: " + target_dir)
 	print("Run the server using start_server.sh or start_server.bat!")
 
 	caller_ui.export_btn.text = "Export Headless Server"
