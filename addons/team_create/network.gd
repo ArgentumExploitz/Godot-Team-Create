@@ -157,7 +157,13 @@ func _request_scene_from_server():
 		while efs.is_scanning():
 			await get_tree().process_frame
 
-	rpc_id(1, "request_push_scene")
+		var scene_path = ""
+		var current_scene = plugin.get_editor_interface().get_edited_scene_root()
+		if current_scene:
+			scene_path = current_scene.scene_file_path
+		rpc_id(1, "request_push_scene", scene_path)
+	else:
+		rpc_id(1, "request_push_scene", "")
 
 @rpc("any_peer", "reliable")
 func sync_peer_info(id: int, info: Dictionary):
@@ -209,9 +215,12 @@ func push_current_scene_to_peer(id: int):
 		scene_sync.push_current_scene_to_peer(id)
 
 @rpc("any_peer", "reliable")
-func request_push_scene():
+func request_push_scene(client_scene_path: String = ""):
 	if is_server:
-		push_current_scene_to_peer(multiplayer.get_remote_sender_id())
+		if scene_sync and client_scene_path != "":
+			scene_sync.push_specific_scene_to_peer(client_scene_path, multiplayer.get_remote_sender_id())
+		else:
+			push_current_scene_to_peer(multiplayer.get_remote_sender_id())
 
 func sync_project_settings():
 	if file_sync:
