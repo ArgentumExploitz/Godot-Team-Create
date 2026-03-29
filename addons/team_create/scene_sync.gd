@@ -332,20 +332,25 @@ func push_current_scene():
 			if path != "":
 				if FileAccess.file_exists(path):
 					var bytes = FileAccess.get_file_as_bytes(path)
-					var chunk_size = 60000
 					var total_size = bytes.size()
-					var offset = 0
 
 					if total_size == 0:
 						rpc("receive_scene", path, bytes, true)
 						return
 
-					while offset < total_size:
-						var end_idx = min(offset + chunk_size, total_size)
-						var chunk = bytes.slice(offset, end_idx)
-						var is_final = (end_idx == total_size)
-						rpc("receive_scene", path, chunk, is_final)
-						offset += chunk_size
+					if network and network.is_webrtc:
+						var chunk_size = 60000
+						var offset = 0
+						while offset < total_size:
+							var end_idx = min(offset + chunk_size, total_size)
+							var chunk = bytes.slice(offset, end_idx)
+							var is_final = (end_idx == total_size)
+							rpc("receive_scene", path, chunk, is_final)
+							offset += chunk_size
+							if not is_final:
+								await get_tree().process_frame
+					else:
+						rpc("receive_scene", path, bytes, true)
 
 func push_specific_scene_to_peer(scene_path: String, id: int):
 	if multiplayer.is_server():
@@ -395,22 +400,25 @@ func push_specific_scene_to_peer(scene_path: String, id: int):
 			_send_scene_bytes_to_peer(scene_path, bytes, id)
 
 func _send_scene_bytes_to_peer(path: String, bytes: PackedByteArray, id: int):
-	var chunk_size = 60000
 	var total_size = bytes.size()
-	var offset = 0
 
 	if total_size == 0:
 		rpc_id(id, "receive_scene", path, bytes, true)
 		return
 
-	while offset < total_size:
-		var end_idx = min(offset + chunk_size, total_size)
-		var chunk = bytes.slice(offset, end_idx)
-		var is_final = (end_idx == total_size)
-		rpc_id(id, "receive_scene", path, chunk, is_final)
-		offset += chunk_size
-		if not is_final:
-			await get_tree().process_frame
+	if network and network.is_webrtc:
+		var chunk_size = 60000
+		var offset = 0
+		while offset < total_size:
+			var end_idx = min(offset + chunk_size, total_size)
+			var chunk = bytes.slice(offset, end_idx)
+			var is_final = (end_idx == total_size)
+			rpc_id(id, "receive_scene", path, chunk, is_final)
+			offset += chunk_size
+			if not is_final:
+				await get_tree().process_frame
+	else:
+		rpc_id(id, "receive_scene", path, bytes, true)
 
 func push_current_scene_to_peer(id: int):
 	if multiplayer.is_server():
@@ -421,20 +429,7 @@ func push_current_scene_to_peer(id: int):
 			if path != "":
 				if FileAccess.file_exists(path):
 					var bytes = FileAccess.get_file_as_bytes(path)
-					var chunk_size = 60000
-					var total_size = bytes.size()
-					var offset = 0
-
-					if total_size == 0:
-						rpc_id(id, "receive_scene", path, bytes, true)
-						return
-
-					while offset < total_size:
-						var end_idx = min(offset + chunk_size, total_size)
-						var chunk = bytes.slice(offset, end_idx)
-						var is_final = (end_idx == total_size)
-						rpc_id(id, "receive_scene", path, chunk, is_final)
-						offset += chunk_size
+					_send_scene_bytes_to_peer(path, bytes, id)
 
 func _on_node_added(node: Node):
 	# Connect for tracking before removal
@@ -684,7 +679,7 @@ func _send_update_node_property(id: String, prop_name: String, value: Variant, s
 
 	# Always serialize to check size
 	bytes = var_to_bytes_with_objects(value)
-	if bytes.size() > 60000:
+	if network and network.is_webrtc and bytes.size() > 60000:
 		needs_chunking = true
 
 	if needs_chunking:
@@ -907,21 +902,26 @@ func request_scene_state(scene_path: String):
 			if ResourceSaver.save(packed, temp_path) == OK:
 				if FileAccess.file_exists(temp_path):
 					var bytes = FileAccess.get_file_as_bytes(temp_path)
-					var chunk_size = 60000
 					var total_size = bytes.size()
-					var offset = 0
 
 					if total_size == 0:
 						rpc_id(sender_id, "receive_scene_state", scene_path, bytes, true)
 						DirAccess.remove_absolute(temp_path)
 						return
 
-					while offset < total_size:
-						var end_idx = min(offset + chunk_size, total_size)
-						var chunk = bytes.slice(offset, end_idx)
-						var is_final = (end_idx == total_size)
-						rpc_id(sender_id, "receive_scene_state", scene_path, chunk, is_final)
-						offset += chunk_size
+					if network and network.is_webrtc:
+						var chunk_size = 60000
+						var offset = 0
+						while offset < total_size:
+							var end_idx = min(offset + chunk_size, total_size)
+							var chunk = bytes.slice(offset, end_idx)
+							var is_final = (end_idx == total_size)
+							rpc_id(sender_id, "receive_scene_state", scene_path, chunk, is_final)
+							offset += chunk_size
+							if not is_final:
+								await get_tree().process_frame
+					else:
+						rpc_id(sender_id, "receive_scene_state", scene_path, bytes, true)
 				DirAccess.remove_absolute(temp_path)
 
 @rpc("any_peer", "reliable")
