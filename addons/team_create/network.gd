@@ -750,8 +750,6 @@ func disconnect_peer():
 		if cur_scn and cur_scn.scene_file_path != "":
 			scene_sync.save_current_camera_for_scene(cur_scn.scene_file_path, true)
 			scene_sync._last_scene_path = cur_scn.scene_file_path
-		elif scene_sync._last_scene_path != "":
-			scene_sync.save_current_camera_for_scene(scene_sync._last_scene_path, true)
 		scene_sync._save_camera_cache()
 		scene_sync.clear_all_peer_indicators()
 		scene_sync._last_tracked_properties.clear()
