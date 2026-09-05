@@ -294,6 +294,13 @@ const MAX_OUTLINE_NODES = 50 # Max visual selection outlines to create in viewpo
 var _pending_selection_nodes: Array = []
 var _pending_selection_index: int = 0
 
+# Per-User, Per-Scene Camera Persistence (never saved into .tscn files)
+const CAMERA_CACHE_FILE = "user://tc_saved_cameras.json"
+var _user_scene_cameras: Dictionary = {}
+var _camera_save_timer: float = 0.0
+const CAMERA_SAVE_INTERVAL: float = 1.0
+var _is_camera_dirty: bool = false
+
 # Tracking structure changes locally so we don't bounce events back and forth
 var _ignore_next_structure_event = false
 var _is_adding_outline = false
@@ -307,6 +314,7 @@ var _receiving_scene_states: Dictionary = {}
 var _receiving_properties: Dictionary = {}
 
 func _ready():
+	_load_camera_cache()
 	var tree = Engine.get_main_loop() as SceneTree
 	if tree:
 		tree.node_added.connect(_on_node_added)
@@ -419,6 +427,13 @@ func _process(delta):
 		_track_changes_throttled()
 	_sync_cursor_throttled(delta)
 
+	if _last_scene_path != "":
+		_camera_save_timer += delta
+		if _camera_save_timer >= CAMERA_SAVE_INTERVAL:
+			_camera_save_timer = 0.0
+			save_current_camera_for_scene(_last_scene_path)
+			_save_camera_cache()
+
 func _get_active_sync_interval() -> float:
 	var ei = _get_editor_interface()
 	if ei:
@@ -515,12 +530,19 @@ func _track_changes_throttled():
 		return
 
 	if current_scene.scene_file_path != _last_scene_path:
+		if _last_scene_path != "":
+			save_current_camera_for_scene(_last_scene_path)
+			_save_camera_cache()
+
 		_last_scene_path = current_scene.scene_file_path
 		_last_tracked_properties.clear()
 		_pending_selection_nodes.clear()
 		_pending_selection_index = 0
 
 		if _last_scene_path != "":
+			_defer_restore_camera(_last_scene_path)
+			if network and network.is_connected_to_session():
+				network.report_current_scene(_last_scene_path, _user_scene_cameras.get(_last_scene_path, {}))
 			rpc("request_scene_state", _last_scene_path)
 			if _pending_offline_merges.has(_last_scene_path):
 				get_tree().create_timer(0.5).timeout.connect(func():
@@ -1751,6 +1773,7 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 
 				editor.reload_scene_from_path(path)
 				network.tc_print("Team Create: Applying received scene to active view.")
+				_defer_restore_camera(path)
 
 				get_tree().create_timer(0.5).timeout.connect(func():
 					_is_reloading_scene = false
@@ -1778,6 +1801,7 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 				var prev_path = current_scene.scene_file_path if current_scene else ""
 				if prev_path != "":
 					editor.open_scene_from_path(prev_path)
+					_defer_restore_camera(prev_path)
 
 				network.tc_print("Team Create: Safely reloaded background scene tab: ", path)
 				return
@@ -1909,6 +1933,7 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 					if current_scene and current_scene.scene_file_path == path:
 						_is_reloading_scene = true
 						editor.reload_scene_from_path(path)
+						_defer_restore_camera(path)
 						get_tree().create_timer(0.5).timeout.connect(func():
 							_is_reloading_scene = false
 							if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
@@ -2346,3 +2371,102 @@ func _on_resource_changed(target, prop_name: String, res: Resource):
 	# Force re-serialization of this resource next frame
 	if _last_tracked_properties.has(id) and _last_tracked_properties[id].has(prop_name):
 		_last_tracked_properties[id].erase(prop_name)
+
+func export_sub_resource_dict(res: Resource) -> Dictionary:
+	if not res:
+		return {}
+	var temp_path = "user://tc_sync_export_" + str(res.get_instance_id()) + ".tres"
+	ResourceSaver.save(res, temp_path)
+	var bytes = PackedByteArray()
+	var text = ""
+	if FileAccess.file_exists(temp_path):
+		bytes = FileAccess.get_file_as_bytes(temp_path)
+		text = FileAccess.get_file_as_string(temp_path)
+		DirAccess.remove_absolute(temp_path)
+	var rpath = res.resource_path
+	if rpath.begins_with("user://"):
+		rpath = ""
+	return {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": rpath, "resource_instance_id": res.get_instance_id()}
+
+# ==============================================================================
+# Per-User, Per-Scene Camera Persistence
+# ==============================================================================
+
+func _load_camera_cache():
+	if FileAccess.file_exists(CAMERA_CACHE_FILE):
+		var f = FileAccess.open(CAMERA_CACHE_FILE, FileAccess.READ)
+		if f:
+			var txt = f.get_as_text()
+			f.close()
+			var json = JSON.new()
+			if json.parse(txt) == OK and typeof(json.data) == TYPE_DICTIONARY:
+				_user_scene_cameras = json.data
+
+func _save_camera_cache():
+	if not _is_camera_dirty:
+		return
+	_is_camera_dirty = false
+	var f = FileAccess.open(CAMERA_CACHE_FILE, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(_user_scene_cameras, "\t"))
+		f.close()
+
+func save_current_camera_for_scene(scene_path: String):
+	if scene_path == "" or DisplayServer.get_name() == "headless" or (network and network.get("is_standalone_server")):
+		return
+	var data = _get_local_cursor_data()
+	if typeof(data) == TYPE_DICTIONARY and data.get("has_3d", false):
+		var t: Transform3D = data.get("pos_3d", Transform3D())
+		_user_scene_cameras[scene_path] = {
+			"has_3d": true,
+			"origin": [t.origin.x, t.origin.y, t.origin.z],
+			"basis_x": [t.basis.x.x, t.basis.x.y, t.basis.x.z],
+			"basis_y": [t.basis.y.x, t.basis.y.y, t.basis.y.z],
+			"basis_z": [t.basis.z.x, t.basis.z.y, t.basis.z.z]
+		}
+		_is_camera_dirty = true
+
+func restore_camera_for_scene(scene_path: String):
+	if scene_path == "" or not _user_scene_cameras.has(scene_path):
+		return
+	if DisplayServer.get_name() == "headless" or (network and network.get("is_standalone_server")):
+		return
+
+	var cam_data = _user_scene_cameras[scene_path]
+	if not (typeof(cam_data) == TYPE_DICTIONARY and cam_data.get("has_3d", false)):
+		return
+
+	var o = cam_data.get("origin", [0, 0, 0])
+	var bx = cam_data.get("basis_x", [1, 0, 0])
+	var by = cam_data.get("basis_y", [0, 1, 0])
+	var bz = cam_data.get("basis_z", [0, 0, 1])
+
+	var origin = Vector3(o[0], o[1], o[2])
+	var basis = Basis(
+		Vector3(bx[0], bx[1], bx[2]),
+		Vector3(by[0], by[1], by[2]),
+		Vector3(bz[0], bz[1], bz[2])
+	)
+	var target_transform = Transform3D(basis, origin)
+
+	var ei = _get_editor_interface()
+	if not ei or not ei.has_method("get_editor_main_screen"):
+		return
+	var main_screen = ei.get_editor_main_screen()
+	if not is_instance_valid(main_screen):
+		return
+
+	if not is_instance_valid(_cached_3d_viewport):
+		_cached_3d_viewport = _find_editor_viewport(main_screen, "Node3DEditorViewport")
+	if is_instance_valid(_cached_3d_viewport):
+		if not is_instance_valid(_cached_3d_camera):
+			_cached_3d_camera = _find_editor_camera_3d(_cached_3d_viewport)
+		if is_instance_valid(_cached_3d_camera):
+			_cached_3d_camera.global_transform = target_transform
+			network.tc_print("Team Create: Restored saved camera position for scene: ", scene_path)
+
+func _defer_restore_camera(scene_path: String):
+	if scene_path == "": return
+	await get_tree().process_frame
+	await get_tree().process_frame
+	restore_camera_for_scene(scene_path)
