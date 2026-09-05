@@ -140,6 +140,10 @@ func _reset_update_button() -> void:
 func download_update() -> void:
 	if downloading:
 		return
+	if network and network.has_method("download_update"):
+		downloading = true
+		network.download_update()
+		return
 	downloading = true
 	if dock and dock.update_btn:
 		dock.update_btn.text = "Downloading..."

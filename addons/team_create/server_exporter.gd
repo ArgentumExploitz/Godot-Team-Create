@@ -75,85 +75,10 @@ class DummyEditorPlugin extends Node:
 	func get_undo_redo(): return dummy_undo_redo
 	func add_control_to_dock(_slot, _control): pass # No-op in headless
 	func remove_control_from_docks(_control): pass # No-op in headless
-	var downloading = false
-
 	func download_update():
-		if downloading:
-			return
-		downloading = true
-		print_rich("[color=yellow]Downloading update from GitHub...[/color]")
-
-		var http_request = HTTPRequest.new()
-		add_child(http_request)
-		http_request.request_completed.connect(self._download_request_completed.bind(http_request))
-		http_request.download_file = "user://team_create_update.zip"
-		var headers = ["User-Agent: Godot-Team-Create-Plugin"]
-		var error = http_request.request("https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip", headers)
-		if error != OK:
-			print_rich("[color=red]An error occurred starting the HTTP download request.[/color]")
-			downloading = false
-
-	func _download_request_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest) -> void:
-		if result == HTTPRequest.RESULT_SUCCESS and (response_code == 200 or response_code == 301 or response_code == 302):
-			_extract_and_apply_update("user://team_create_update.zip")
-		else:
-			print_rich("[color=red]Failed to download update. Response code: " + str(response_code) + "[/color]")
-			downloading = false
-
-		http_request.queue_free()
-
-	func _extract_and_apply_update(zip_path: String) -> void:
-		var zip_reader = ZIPReader.new()
-		var err = zip_reader.open(zip_path)
-		if err != OK:
-			print_rich("[color=red]Failed to open update zip.[/color]")
-			DirAccess.remove_absolute(zip_path)
-			downloading = false
-			return
-
-		print_rich("[color=yellow]Extracting update...[/color]")
-		var files = zip_reader.get_files()
-		for f in files:
-			if f.ends_with("/"):
-				continue # Directory
-
-			# Normalize path separators
-			var f_norm = f.replace("\\\\", "/")
-
-			# Ensure it's inside the addons/team_create folder
-			var parts = f_norm.split("/")
-			if parts.size() > 2 and parts[1] == "addons" and parts[2] == "team_create":
-				var dest_path = ("res://" + "/".join(parts.slice(1, parts.size()))).simplify_path()
-
-				# Validate path to prevent ZipSlip traversal and absolute path escapes
-				if not dest_path.begins_with("res://addons/team_create/"):
-					printerr("Security Warning: Traversal attempt detected in update zip: ", f)
-					continue
-
-				var global_dest = ProjectSettings.globalize_path(dest_path)
-
-				# Ensure directory exists
-				var dest_dir = global_dest.get_base_dir()
-				if not DirAccess.dir_exists_absolute(dest_dir):
-					DirAccess.make_dir_recursive_absolute(dest_dir)
-
-				var content = zip_reader.read_file(f)
-				DirAccess.remove_absolute(global_dest)
-				var out_file = FileAccess.open(global_dest, FileAccess.WRITE)
-				if out_file:
-					out_file.store_buffer(content)
-					out_file.close()
-				else:
-					print_rich("[color=red]Failed to write updated file: " + dest_path + "[/color]")
-
-		zip_reader.close()
-		DirAccess.remove_absolute(zip_path)
-		print_rich("[color=green]Update applied successfully! Restarting server...[/color]")
 		var tc_network = get_tree().root.get_node_or_null("TeamCreateNetwork")
-		if tc_network and tc_network.has_method("_deferred_restart"):
-			tc_network.call_deferred("_deferred_restart")
-		else:
-			get_editor_interface().restart_editor()
+		if tc_network and tc_network.has_method("download_update"):
+			tc_network.download_update()
 
 	func check_for_updates(): pass # No-op in headless
 

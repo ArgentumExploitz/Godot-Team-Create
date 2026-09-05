@@ -154,7 +154,7 @@ func _process_console_command(input: String):
 			tc_print_rich("[color=white]/kick <user>[/color]   - Kicks a user from the server")
 			tc_print_rich("[color=white]/list[/color]          - Lists all connected users")
 			tc_print_rich("[color=white]/info[/color]          - Shows server statistics (memory, CPU, players, etc.)")
-			tc_print_rich("[color=white]/update[/color]        - Downloads latest update and closes the server")
+			tc_print_rich("[color=white]/update[/color]        - Downloads latest update and restarts the server")
 			tc_print_rich("[color=white]/restart[/color]       - Restarts the server")
 			tc_print_rich("[color=white]/stop[/color]          - Stops and exits the server")
 			tc_print_rich("[color=white]/saveprints <true/false>[/color] - Toggles auto-save prints")
@@ -386,12 +386,9 @@ func _process_console_command(input: String):
 			else:
 				tc_print_rich("[color=red]User not found: " + target_username + "[/color]")
 
-	elif cmd == "/update":
-		tc_print_rich("[color=cyan]Updating plugin and closing server...[/color]")
-		if plugin and plugin.has_method("download_update"):
-			call_deferred("_deferred_update_and_close")
-		else:
-			tc_print_rich("[color=red]Update mechanism not available.[/color]")
+	elif cmd == "/update" or cmd == "update":
+		tc_print_rich("[color=cyan]Updating server from GitHub...[/color]")
+		download_update()
 
 	elif cmd == "/list":
 		tc_print_rich("[color=cyan]Connected users:[/color]")
@@ -407,11 +404,11 @@ func _process_console_command(input: String):
 			count += 1
 		tc_print_rich("[color=green]Total users: " + str(count) + "[/color]")
 
-	elif cmd == "/restart":
+	elif cmd == "/restart" or cmd == "restart":
 		tc_print_rich("[color=orange]Restarting server...[/color]")
 		call_deferred("_deferred_restart")
 
-	elif cmd == "/stop":
+	elif cmd == "/stop" or cmd == "stop":
 		tc_print_rich("[color=red]Stopping server...[/color]")
 		call_deferred("_deferred_stop")
 
@@ -457,38 +454,203 @@ func _process_console_command(input: String):
 	else:
 		tc_print_rich("[color=red]Unknown command: " + cmd + "[/color]")
 
+var downloading = false
+
+func download_update() -> void:
+	if downloading:
+		tc_print_rich("[color=orange]An update download is already in progress.[/color]")
+		return
+	downloading = true
+
+	if is_server:
+		rpc("show_popup", "Server is updating to the latest version. Please reconnect in a moment.")
+		if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
+			scene_sync.flush_all_scenes_to_disk()
+
+	if plugin and "dock" in plugin and plugin.dock and "update_btn" in plugin.dock and plugin.dock.update_btn:
+		plugin.dock.update_btn.text = "Downloading..."
+
+	tc_print_rich("[color=yellow]Downloading update from GitHub...[/color]")
+	var http_request = HTTPRequest.new()
+	http_request.name = "TC_Update_HTTPRequest"
+	add_child(http_request)
+	http_request.request_completed.connect(self._on_update_download_completed.bind(http_request))
+	http_request.download_file = "user://team_create_update.zip"
+	var headers = ["User-Agent: Godot-Team-Create-Plugin"]
+	var error = http_request.request("https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip", headers)
+	if error != OK:
+		tc_print_rich("[color=red]Failed to start HTTP download: " + error_string(error) + "[/color]")
+		downloading = false
+		if plugin:
+			if plugin.has_method("_reset_update_button"):
+				plugin._reset_update_button()
+			plugin.downloading = false
+		http_request.queue_free()
+
+func _on_update_download_completed(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_request: HTTPRequest) -> void:
+	http_request.queue_free()
+
+	if result == HTTPRequest.RESULT_SUCCESS and (response_code >= 200 and response_code < 400):
+		tc_print_rich("[color=green]Download completed successfully. Applying update...[/color]")
+		_apply_update_zip("user://team_create_update.zip")
+	else:
+		tc_print_rich("[color=red]Failed to download update. Result: " + str(result) + ", HTTP Response Code: " + str(response_code) + "[/color]")
+		downloading = false
+		if FileAccess.file_exists("user://team_create_update.zip"):
+			DirAccess.remove_absolute("user://team_create_update.zip")
+		if plugin:
+			if plugin.has_method("_reset_update_button"):
+				plugin._reset_update_button()
+			plugin.downloading = false
+
+func _apply_update_zip(zip_path: String) -> void:
+	var zip_reader = ZIPReader.new()
+	var err = zip_reader.open(zip_path)
+	if err != OK:
+		tc_print_rich("[color=red]Failed to open update zip file (Error: " + error_string(err) + ").[/color]")
+		DirAccess.remove_absolute(zip_path)
+		downloading = false
+		if plugin:
+			if plugin.has_method("_reset_update_button"):
+				plugin._reset_update_button()
+			plugin.downloading = false
+		return
+
+	tc_print_rich("[color=yellow]Extracting updated plugin files...[/color]")
+	var files = zip_reader.get_files()
+	var updated_count = 0
+
+	for f in files:
+		if f.ends_with("/"):
+			continue
+
+		var f_norm = f.replace("\\", "/")
+		var parts = f_norm.split("/")
+		var addons_idx = -1
+		for i in range(parts.size() - 1):
+			if parts[i] == "addons" and parts[i + 1] == "team_create":
+				addons_idx = i
+				break
+
+		if addons_idx != -1:
+			var rel_parts = parts.slice(addons_idx, parts.size())
+			var dest_path = ("res://" + "/".join(rel_parts)).simplify_path()
+
+			if not dest_path.begins_with("res://addons/team_create/"):
+				printerr("Security Warning: Traversal attempt detected in update zip: ", f)
+				continue
+
+			var global_dest = ProjectSettings.globalize_path(dest_path)
+			var dest_dir = global_dest.get_base_dir()
+			if not DirAccess.dir_exists_absolute(dest_dir):
+				DirAccess.make_dir_recursive_absolute(dest_dir)
+
+			var content = zip_reader.read_file(f)
+			if DirAccess.remove_absolute(global_dest) != OK and FileAccess.file_exists(global_dest):
+				pass
+
+			var out_file = FileAccess.open(global_dest, FileAccess.WRITE)
+			if out_file:
+				out_file.store_buffer(content)
+				out_file.close()
+				updated_count += 1
+			else:
+				tc_print_rich("[color=red]Failed to write updated file: " + dest_path + "[/color]")
+
+	zip_reader.close()
+	DirAccess.remove_absolute(zip_path)
+	downloading = false
+	if plugin:
+		plugin.downloading = false
+
+	# If server.gd exists, synchronize it from updated server_exporter.gd
+	if FileAccess.file_exists("res://addons/team_create/server.gd"):
+		_update_server_bootstrap_script()
+
+	tc_print_rich("[color=green]Update applied successfully (" + str(updated_count) + " files updated). Restarting server...[/color]")
+
+	if plugin and "dock" in plugin and plugin.dock and "update_btn" in plugin.dock and plugin.dock.update_btn:
+		plugin.dock.update_btn.text = "Restarting..."
+
+	call_deferred("_deferred_restart")
+
+func _update_server_bootstrap_script() -> void:
+	var exporter = load("res://addons/team_create/server_exporter.gd")
+	if exporter:
+		var server_path = ProjectSettings.globalize_path("res://addons/team_create/server.gd")
+		var f = FileAccess.open(server_path, FileAccess.WRITE)
+		if f:
+			f.store_string(exporter.SERVER_SCRIPT_TEMPLATE)
+			f.close()
+			tc_print_rich("[color=cyan]Updated standalone server bootstrap (server.gd).[/color]")
+
 func _deferred_update_and_close():
-	if plugin and plugin.has_method("download_update"):
-		plugin.download_update()
-		# Actual close is handled when extraction completes
+	download_update()
 
 func _deferred_restart():
-	# Clean up network connections before restarting
+	tc_print_rich("[color=orange]Restarting server...[/color]")
+	if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
+		scene_sync.flush_all_scenes_to_disk()
+
+	if file_sync and file_sync.has_method("stop_http_server"):
+		file_sync.stop_http_server()
+
 	disconnect_peer()
 	_save_chat_history()
 
+	var is_headless = DisplayServer.get_name() == "headless"
 	var exec_path = OS.get_executable_path()
-	var args = []
-	if DisplayServer.get_name() == "headless":
-		args.append("--headless")
+	var args: PackedStringArray = []
 
 	for arg in OS.get_cmdline_args():
 		args.append(arg)
 
-	if OS.has_method("set_restart_on_exit"):
-		OS.set_restart_on_exit(true, args)
-	elif OS.has_method("create_instance"):
-		OS.create_instance(args)
-	elif OS.has_method("create_process"):
-		OS.create_process(exec_path, args)
-	else:
-		tc_print("Restart not supported on this platform/version. Stopping instead.")
+	if is_headless and not "--headless" in args:
+		args.insert(0, "--headless")
 
-	_deferred_stop()
+	if _console_thread and _console_thread.is_started():
+		_console_should_exit = true
+
+	if is_headless:
+		# On Windows, locate the console wrapper if currently running via the main binary
+		if OS.get_name() == "Windows":
+			var base_dir = exec_path.get_base_dir()
+			var base_name = exec_path.get_file().get_basename()
+			if not base_name.to_lower().contains("console"):
+				var candidates = [
+					base_dir + "/" + base_name + "_console.exe",
+					base_dir + "/" + base_name + ".console.exe",
+					base_dir + "/godot.console.exe"
+				]
+				for cand in candidates:
+					if FileAccess.file_exists(cand):
+						exec_path = cand
+						break
+
+		# Important: on Windows, p_open_console MUST be true when restarting headless,
+		# otherwise OS_Windows::create_process spawns with CREATE_NO_WINDOW which hides the console completely!
+		var pid = OS.create_process(exec_path, args, true)
+		if pid <= 0:
+			tc_print_rich("[color=red]Failed to launch new server process.[/color]")
+		else:
+			tc_print_rich("[color=green]Server restarted in new console (PID: " + str(pid) + "). Exiting current instance...[/color]")
+		get_tree().quit(0)
+	else:
+		var editor_iface = _get_editor_interface()
+		if editor_iface and editor_iface.has_method("restart_editor"):
+			editor_iface.restart_editor()
+		elif OS.has_method("set_restart_on_exit"):
+			OS.set_restart_on_exit(true, args)
+			get_tree().quit(0)
+		else:
+			OS.create_process(exec_path, args)
+			get_tree().quit(0)
 
 func _deferred_stop():
 	if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
 		scene_sync.flush_all_scenes_to_disk()
+	if file_sync and file_sync.has_method("stop_http_server"):
+		file_sync.stop_http_server()
 	disconnect_peer()
 	_save_chat_history()
 
@@ -589,6 +751,8 @@ func disconnect_peer():
 		ui.set_disconnected()
 	if file_sync:
 		file_sync._hide_sync_blocker()
+		if file_sync.has_method("stop_http_server"):
+			file_sync.stop_http_server()
 	if was_connected:
 		tc_print("Disconnected")
 

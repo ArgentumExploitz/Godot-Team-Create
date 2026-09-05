@@ -168,13 +168,25 @@ func _process(delta):
 func _setup_http_server():
 	if network and network.get("is_standalone_server"):
 		_http_server = TCPServer.new()
-		var base_port = network.PORT if (network and "PORT" in network) else (network.get("PORT") if network and network.get("PORT") != null else 12345)
+		var base_port = network.PORT if network else 12345
 		var port = base_port + 1
 		var err = _http_server.listen(port)
 		if err == OK:
 			network.tc_print("HTTP File Server listening on port " + str(port))
 		else:
 			network.tc_print("Failed to start HTTP File Server on port " + str(port))
+
+func stop_http_server() -> void:
+	if _http_server and _http_server.is_listening():
+		_http_server.stop()
+		for peer in _http_clients:
+			if peer and peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
+				peer.disconnect_from_host()
+		_http_clients.clear()
+		_http_buffers.clear()
+		_http_responses.clear()
+		if network:
+			network.tc_print("HTTP File Server stopped.")
 
 
 
