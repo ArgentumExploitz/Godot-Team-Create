@@ -110,6 +110,11 @@ func _get_editor_interface():
 		return network.plugin.get_editor_interface()
 	return null
 
+func _get_connected_peers() -> PackedInt32Array:
+	if network and network.is_inside_tree() and network.is_connected_to_session() and network.multiplayer and network.multiplayer.has_multiplayer_peer():
+		return network.multiplayer.get_peers()
+	return PackedInt32Array()
+
 func _get_edited_scene_root() -> Node:
 	var ei = _get_editor_interface()
 	if ei:
@@ -372,7 +377,7 @@ func _on_node_tree_exiting(node: Node):
 	if edited_scene and (node == edited_scene or current_scene != edited_scene):
 		return
 
-	if network and network.is_connected_to_session() and not multiplayer.get_peers().is_empty():
+	if network and network.is_connected_to_session() and not _get_connected_peers().is_empty():
 		var scene_path = ""
 		if node.owner and node.owner.scene_file_path != "":
 			scene_path = node.owner.scene_file_path
@@ -710,7 +715,7 @@ func _track_selection():
 func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
 	if network and network.is_server and sender_id != 0:
-		for pid in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for pid in _get_connected_peers():
 			if pid != sender_id:
 				rpc_id(pid, "update_peer_selection", peer_id, selected_ids, scene_path)
 
@@ -931,7 +936,7 @@ func _on_node_added(node: Node):
 
 	_node_names[node.get_instance_id()] = node.name
 
-	if _is_applying_remote_update or _ignore_next_structure_event or _is_reloading_scene or not (network and network.is_connected_to_session()) or multiplayer.get_peers().is_empty():
+	if _is_applying_remote_update or _ignore_next_structure_event or _is_reloading_scene or not (network and network.is_connected_to_session()) or _get_connected_peers().is_empty():
 		return
 
 	# Reparenting check: if this node was removed earlier in the current frame, it was reparented!
@@ -1110,7 +1115,7 @@ func _on_node_removed(node: Node):
 	if _pre_removal_paths.has(inst_id):
 		_pre_removal_paths.erase(inst_id)
 
-	if _ignore_next_structure_event or _is_reloading_scene or not (network and network.is_connected_to_session()) or multiplayer.get_peers().is_empty() or id == "":
+	if _ignore_next_structure_event or _is_reloading_scene or not (network and network.is_connected_to_session()) or _get_connected_peers().is_empty() or id == "":
 		if _node_names.has(inst_id):
 			_node_names.erase(inst_id)
 		if id != "" and _last_tracked_properties.has(id):
@@ -1160,7 +1165,7 @@ func _on_node_removed(node: Node):
 	mark_scene_dirty(scene_path)
 
 func _on_node_renamed(node: Node):
-	if _ignore_next_structure_event or _is_reloading_scene or not (network and network.is_connected_to_session()) or multiplayer.get_peers().is_empty():
+	if _ignore_next_structure_event or _is_reloading_scene or not (network and network.is_connected_to_session()) or _get_connected_peers().is_empty():
 		return
 
 	var parent = node.get_parent()
@@ -1183,7 +1188,7 @@ func _on_node_renamed(node: Node):
 func remote_node_reparented(id: String, new_parent_id: String, new_index: int, scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
 	if network and network.is_server and sender_id != 0:
-		for peer_id in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for peer_id in _get_connected_peers():
 			if peer_id != sender_id:
 				rpc_id(peer_id, "remote_node_reparented", id, new_parent_id, new_index, scene_path)
 
@@ -1215,7 +1220,7 @@ func remote_node_reparented(id: String, new_parent_id: String, new_index: int, s
 func remote_node_added(parent_id: String, type: String, new_name: String, new_id: String, scene_path: String = "", node_scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
 	if network and network.is_server and sender_id != 0:
-		for peer_id in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for peer_id in _get_connected_peers():
 			if peer_id != sender_id:
 				rpc_id(peer_id, "remote_node_added", parent_id, type, new_name, new_id, scene_path, node_scene_path)
 
@@ -1259,7 +1264,7 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 func remote_node_removed(id: String, scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
 	if network and network.is_server and sender_id != 0:
-		for peer_id in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for peer_id in _get_connected_peers():
 			if peer_id != sender_id:
 				rpc_id(peer_id, "remote_node_removed", id, scene_path)
 
@@ -1288,7 +1293,7 @@ func remote_node_renamed(new_id: String, new_name: String):
 func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: String, scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
 	if network and network.is_server and sender_id != 0:
-		for peer_id in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for peer_id in _get_connected_peers():
 			if peer_id != sender_id:
 				rpc_id(peer_id, "remote_node_renamed_exact", parent_id, old_name, new_name, scene_path)
 
@@ -1331,7 +1336,7 @@ func update_node_property_chunked(id: String, prop_name: String, transfer_id: in
 	var sender_id = multiplayer.get_remote_sender_id() if (network and network.is_connected_to_session()) else 0
 
 	if network and network.is_server and sender_id != 0:
-		for peer_id in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for peer_id in _get_connected_peers():
 			if peer_id != sender_id:
 				rpc_id(peer_id, "update_node_property_chunked", id, prop_name, transfer_id, chunk, scene_path, is_final)
 
@@ -1356,7 +1361,7 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 	var sender_id = multiplayer.get_remote_sender_id() if (network and network.is_connected_to_session()) else 0
 
 	if network and network.is_server and sender_id != 0:
-		for peer_id in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for peer_id in _get_connected_peers():
 			if peer_id != sender_id:
 				rpc_id(peer_id, "update_node_property", id, prop_name, value, scene_path)
 
@@ -2030,7 +2035,7 @@ func _sync_cursor_throttled(delta):
 func update_peer_cursor_3d(peer_id: int, pos: Transform3D, scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if (network and network.is_connected_to_session()) else 0
 	if network and network.is_server and sender_id != 0:
-		for pid in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for pid in _get_connected_peers():
 			if pid != sender_id:
 				rpc_id(pid, "update_peer_cursor_3d", peer_id, pos, scene_path)
 
@@ -2055,7 +2060,7 @@ func update_peer_cursor_3d(peer_id: int, pos: Transform3D, scene_path: String = 
 func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if (network and network.is_connected_to_session()) else 0
 	if network and network.is_server and sender_id != 0:
-		for pid in (multiplayer.get_peers() if (network and network.is_connected_to_session()) else []):
+		for pid in _get_connected_peers():
 			if pid != sender_id:
 				rpc_id(pid, "update_peer_cursor_2d", peer_id, pos, scene_path)
 

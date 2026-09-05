@@ -120,6 +120,60 @@ const LINUX_SH_TEMPLATE = """#!/bin/bash
 # Team Create Linux Headless Server
 # This script launches the project in headless mode as a server.
 
+cd "$(dirname "$0")"
+
+# Check for updates
+CFG_FILE="project/addons/team_create/plugin.cfg"
+if [ -f "$CFG_FILE" ]; then
+    echo "Checking for Godot Team Create updates..."
+    LOCAL_VER=$(grep -i '^version=' "$CFG_FILE" | head -n1 | cut -d'=' -f2 | tr -d ' "\r')
+    REMOTE_CFG=""
+    if command -v curl >/dev/null 2>&1; then
+        REMOTE_CFG=$(curl -sL --max-time 5 "https://raw.githubusercontent.com/N3rmis/Godot-Team-Create/main/addons/team_create/plugin.cfg" 2>/dev/null)
+    elif command -v wget >/dev/null 2>&1; then
+        REMOTE_CFG=$(wget -qO- --timeout=5 "https://raw.githubusercontent.com/N3rmis/Godot-Team-Create/main/addons/team_create/plugin.cfg" 2>/dev/null)
+    fi
+    REMOTE_VER=$(echo "$REMOTE_CFG" | grep -i '^version=' | head -n1 | cut -d'=' -f2 | tr -d ' "\r')
+
+    if [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$LOCAL_VER" ]; then
+        echo ""
+        echo "==================================================="
+        echo " A new version of Godot Team Create is available!"
+        echo " Current version: $LOCAL_VER"
+        echo " Latest version:  $REMOTE_VER"
+        echo "==================================================="
+        echo ""
+        read -p "Do you want to update? (y/n): " choice
+        choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
+        if [ "$choice" = "y" ] || [ "$choice" = "yes" ]; then
+            echo "Downloading update from GitHub..."
+            TEMP_ZIP="/tmp/tc_update_$$.zip"
+            if command -v curl >/dev/null 2>&1; then
+                curl -sL "https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip" -o "$TEMP_ZIP"
+            else
+                wget -qO "$TEMP_ZIP" "https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip"
+            fi
+            if [ -f "$TEMP_ZIP" ] && command -v unzip >/dev/null 2>&1; then
+                echo "Extracting updated files..."
+                EXTRACT_DIR="/tmp/tc_extract_$$"
+                mkdir -p "$EXTRACT_DIR"
+                unzip -q -o "$TEMP_ZIP" -d "$EXTRACT_DIR"
+                find "$EXTRACT_DIR" -type d -name "team_create" | while read -r tc_dir; do
+                    cp -r "$tc_dir"/* project/addons/team_create/
+                done
+                rm -rf "$EXTRACT_DIR" "$TEMP_ZIP"
+                echo "Update applied successfully!"
+                echo ""
+            fi
+        else
+            echo "Skipping update."
+            echo ""
+        fi
+    elif [ -n "$REMOTE_VER" ]; then
+        echo "Team Create is up to date (v$LOCAL_VER)."
+    fi
+fi
+
 GODOT_EXEC="godot"
 
 for f in ./*linux*.x86_64 ./*linux*.x86_32 ./Godot_v4*.x86_64 ./godot*; do
@@ -136,6 +190,13 @@ echo "Starting Team Create Server..."
 const WINDOWS_BAT_TEMPLATE = """@echo off
 :: Team Create Windows Headless Server
 :: This script launches the project in headless mode as a server.
+
+cd /d "%~dp0"
+
+:: Check for new version before starting Godot
+if exist "%~dp0check_updates.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check_updates.ps1"
+)
 
 set "GODOT_EXEC=godot.console.exe"
 
@@ -172,6 +233,100 @@ echo.
 echo Starting Team Create Server...
 "%GODOT_EXEC%" --path project --headless
 pause
+"""
+
+const CHECK_UPDATES_PS1_TEMPLATE = """# Team Create Headless Server Update Checker
+$ErrorActionPreference = 'SilentlyContinue'
+
+Write-Host "Checking for Godot Team Create updates..." -ForegroundColor Cyan
+
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
+
+$cfgPath = Join-Path $scriptDir "project\\addons\\team_create\\plugin.cfg"
+$localVer = "Unknown"
+if (Test-Path $cfgPath) {
+    Get-Content $cfgPath | ForEach-Object {
+        $trimmed = $_.Trim()
+        if ($trimmed.StartsWith("version=")) {
+            $localVer = $trimmed.Split("=")[1].Replace('"', '').Trim()
+        }
+    }
+}
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$remoteVer = ""
+try {
+    $wc = New-Object Net.WebClient
+    $wc.Headers.Add("User-Agent", "Godot-Team-Create-Updater")
+    $raw = $wc.DownloadString("https://raw.githubusercontent.com/N3rmis/Godot-Team-Create/main/addons/team_create/plugin.cfg")
+    $raw -split "`r?`n" | ForEach-Object {
+        $trimmed = $_.Trim()
+        if ($trimmed.StartsWith("version=")) {
+            $remoteVer = $trimmed.Split("=")[1].Replace('"', '').Trim()
+        }
+    }
+} catch {
+    Write-Host "Could not check for updates (offline or GitHub unreachable)." -ForegroundColor Yellow
+}
+
+if ($remoteVer -and ($remoteVer -ne $localVer)) {
+    Write-Host ""
+    Write-Host "===================================================" -ForegroundColor Cyan
+    Write-Host " A new version of Godot Team Create is available!" -ForegroundColor Green
+    Write-Host " Current version: $localVer" -ForegroundColor White
+    Write-Host " Latest version:  $remoteVer" -ForegroundColor Green
+    Write-Host "===================================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    $choice = ""
+    while ($choice -ne "y" -and $choice -ne "yes" -and $choice -ne "n" -and $choice -ne "no") {
+        $choice = (Read-Host "Do you want to update? (y/n)").Trim().ToLower()
+        if ($choice -ne "y" -and $choice -ne "yes" -and $choice -ne "n" -and $choice -ne "no") {
+            Write-Host "Please type 'y' (yes) or 'n' (no)." -ForegroundColor Yellow
+        }
+    }
+
+    if ($choice -eq "y" -or $choice -eq "yes") {
+        Write-Host "Downloading update from GitHub..." -ForegroundColor Yellow
+        $tempZip = Join-Path $env:TEMP "tc_update_$(Get-Random).zip"
+        try {
+            $wc.DownloadFile("https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip", $tempZip)
+            Write-Host "Extracting updated files..." -ForegroundColor Yellow
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $destDir = Join-Path $scriptDir "project\\addons\\team_create"
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($tempZip)
+            $count = 0
+            foreach ($entry in $zip.Entries) {
+                if ($entry.FullName.Contains("addons/team_create/")) {
+                    $idx = $entry.FullName.IndexOf("addons/team_create/")
+                    $rel = $entry.FullName.Substring($idx + "addons/team_create/".Length)
+                    if ($rel -and -not $rel.EndsWith("/")) {
+                        $target = Join-Path $destDir $rel
+                        $dir = [System.IO.Path]::GetDirectoryName($target)
+                        if (-not (Test-Path $dir)) { [System.IO.Directory]::CreateDirectory($dir) | Out-Null }
+                        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+                        $count++
+                    }
+                }
+            }
+            $zip.Dispose()
+            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            Write-Host "Update applied successfully ($count files updated)!" -ForegroundColor Green
+            Write-Host ""
+        } catch {
+            Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host ""
+        }
+    } else {
+        Write-Host "Skipping update." -ForegroundColor Yellow
+        Write-Host ""
+    }
+} else {
+    if ($remoteVer) {
+        Write-Host "Team Create is up to date (v$localVer)." -ForegroundColor Green
+    }
+}
 """
 
 static func copy_dir_recursive(from_path: String, to_path: String, ignore_paths: Array = []) -> bool:
@@ -331,6 +486,11 @@ static func export_server(target_dir: String, caller_ui: Control) -> void:
 	else:
 		_abort_export(caller_ui, "Failed to write start_server.bat.")
 		return
+
+	var win_ps1 = FileAccess.open(target_dir + "/check_updates.ps1", FileAccess.WRITE)
+	if win_ps1:
+		win_ps1.store_string(CHECK_UPDATES_PS1_TEMPLATE)
+		win_ps1.close()
 
 	print("Export complete! Project bundled in: " + target_dir)
 	print("Run the server using start_server.sh or start_server.bat!")
