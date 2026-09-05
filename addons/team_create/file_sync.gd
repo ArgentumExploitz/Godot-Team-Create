@@ -259,7 +259,7 @@ func request_asset_immediately(path: String, sender_id: int = 1):
 		asset_imported.emit(path)
 		return
 
-	if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+	if network and network.is_connected_to_session():
 		var target_id = sender_id
 		if target_id == 0 or target_id == multiplayer.get_unique_id():
 			target_id = 1
@@ -359,7 +359,7 @@ func _setup_fs_signals():
 				efs.filesystem_changed.connect(_on_filesystem_changed)
 
 func _on_filesystem_changed():
-	if _is_syncing_files or not is_inside_tree() or not multiplayer or not multiplayer.has_multiplayer_peer() or multiplayer.multiplayer_peer == null or multiplayer.get_peers().is_empty():
+	if _is_syncing_files or not (network and network.is_connected_to_session()) or multiplayer.get_peers().is_empty():
 		return
 
 	var current_files = get_all_files("res://")
@@ -417,7 +417,7 @@ func _on_filesystem_changed():
 	_known_files = current_files.duplicate()
 
 func sync_project_settings():
-	if multiplayer.is_server():
+	if network and network.is_server:
 		var bytes = FileAccess.get_file_as_bytes("res://project.godot")
 		if network and network.get("is_standalone_server"):
 			var text = bytes.get_string_from_utf8()
@@ -440,7 +440,7 @@ func sync_all_files(all_files: Array = []):
 	_is_syncing_files = false
 
 func sync_all_files_to_peer(id: int, all_files: Array = []):
-	if multiplayer.is_server():
+	if network and network.is_server:
 		if all_files.is_empty():
 			all_files = get_all_files("res://")
 		var file_hashes = {}
@@ -556,7 +556,7 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 			continue
 
 		# Server is authoritative: The server never downloads existing files over its own copy
-		if multiplayer.is_server() and local_hashes.has(path):
+		if network and network.is_server and local_hashes.has(path):
 			continue
 
 		if not local_hashes.has(path) or local_hashes[path] != peer_hashes[path]:
@@ -733,7 +733,7 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 
 		if path in open_scenes:
 			var merge_data = {}
-			if network and network.scene_sync and not (multiplayer and multiplayer.is_server()):
+			if network and network.scene_sync and not network.is_server:
 				merge_data = network.scene_sync.prepare_offline_scene_merge(path, bytes)
 
 			var is_active = current_scene and current_scene.scene_file_path == path
@@ -798,7 +798,7 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 		if should_write:
 			if path.ends_with(".tscn") or path.ends_with(".scn"):
 				backup_scene(path)
-				if network and network.scene_sync and not (multiplayer and multiplayer.is_server()):
+				if network and network.scene_sync and not network.is_server:
 					network.scene_sync.prepare_offline_scene_merge(path, bytes)
 			_file_write_mutex.lock()
 			var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)

@@ -375,7 +375,7 @@ func update_users_count(count: int) -> void:
 
 		var text = "Users: " + str(visible_count) + "\n"
 		var my_id = 0
-		if network and network.is_inside_tree() and network.multiplayer and network.multiplayer.has_multiplayer_peer() and network.multiplayer.multiplayer_peer != null and network.multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		if network and network.is_connected_to_session():
 			my_id = network.multiplayer.get_unique_id()
 
 		for peer_id in network.peers:
