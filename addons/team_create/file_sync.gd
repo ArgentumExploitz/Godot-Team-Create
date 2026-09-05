@@ -259,7 +259,7 @@ func request_asset_immediately(path: String, sender_id: int = 1):
 		asset_imported.emit(path)
 		return
 
-	if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+	if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 		var target_id = sender_id
 		if target_id == 0 or target_id == multiplayer.get_unique_id():
 			target_id = 1
@@ -359,7 +359,7 @@ func _setup_fs_signals():
 				efs.filesystem_changed.connect(_on_filesystem_changed)
 
 func _on_filesystem_changed():
-	if _is_syncing_files or not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
+	if _is_syncing_files or not is_inside_tree() or not multiplayer or not multiplayer.has_multiplayer_peer() or multiplayer.multiplayer_peer == null or multiplayer.get_peers().is_empty():
 		return
 
 	var current_files = get_all_files("res://")

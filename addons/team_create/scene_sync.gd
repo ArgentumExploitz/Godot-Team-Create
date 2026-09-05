@@ -159,8 +159,8 @@ func _save_server_tracked_scenes():
 
 	var cached_outlines = []
 	var cached_cursors = []
-	var tree = get_tree()
-	if tree:
+	if is_inside_tree() and get_tree():
+		var tree = get_tree()
 		cached_outlines = tree.get_nodes_in_group("TeamCreateSelectionOutlines")
 		cached_cursors = tree.get_nodes_in_group("TeamCreateCursors")
 
@@ -393,6 +393,8 @@ func _process(delta):
 		if _dirty_save_cooldown <= 0.0:
 			save_dirty_scenes()
 
+	_process_pending_resource_properties()
+
 	if not network or not network.plugin or not multiplayer or not multiplayer.has_multiplayer_peer() or multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
 
@@ -402,8 +404,6 @@ func _process(delta):
 		_track_selection()
 		_track_changes_throttled()
 	_sync_cursor_throttled(delta)
-
-	_process_pending_resource_properties()
 
 func _process_pending_resource_properties():
 	if _pending_resource_properties.is_empty():
@@ -461,19 +461,8 @@ func _process_pending_resource_properties():
 						if res:
 							node.set(pending.prop_name, res)
 					elif typeof(pending.value) == TYPE_DICTIONARY:
-						var temp_path = "user://tc_sync_import_" + str(pending.value.hash()) + ".tres"
-						var file = FileAccess.open(temp_path, FileAccess.WRITE)
-						if file:
-							file.store_buffer(pending.value["sub_resource_bytes"])
-							file.close()
-						var res = load(temp_path)
-						DirAccess.remove_absolute(temp_path)
-						if res is Resource:
-							var path = pending.value.get("resource_path", "")
-							if path != "" and path.begins_with("res://") and not "::" in path:
-								res.take_over_path(path)
-							else:
-								res.resource_path = ""
+						var res = _import_sub_resource(pending.value)
+						if res:
 							node.set(pending.prop_name, res)
 					_is_applying_remote_update = false
 					mark_scene_dirty(pending.scene_path)
@@ -519,7 +508,7 @@ func _check_single_node_changes(node: Node):
 	if _is_applying_remote_update:
 		return
 	var id = network.assign_unique_id(node)
-	var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+	var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED) else 1
 	if _active_node_locks.has(id) and _active_node_locks[id] != my_id:
 		return
 
@@ -552,8 +541,8 @@ func _check_single_node_changes(node: Node):
 							force_res_update = true
 
 						# Listen for native changed signal
-						if not val.is_connected("changed", _on_resource_changed.bind(node, p.name, val)):
-							val.connect("changed", _on_resource_changed.bind(node, p.name, val))
+						if not val.is_connected("changed", _on_resource_changed.bind(id, p.name, val)):
+							val.connect("changed", _on_resource_changed.bind(id, p.name, val))
 
 						if force_res_update:
 							var temp_path = "user://tc_sync_export_" + str(val.get_instance_id()) + ".tres"
@@ -632,7 +621,7 @@ func _track_selection():
 						rpc_id(1, "request_node_lock", id, _last_scene_path)
 
 		_last_selected_ids = selected_ids
-		if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			rpc("update_peer_selection", multiplayer.get_unique_id(), selected_ids, _last_scene_path)
 
 @rpc("any_peer", "reliable")
@@ -763,43 +752,44 @@ func push_specific_scene_to_peer(scene_path: String, id: int):
 			push_current_scene_to_peer(id)
 			return
 
-		# This is called on the standalone server. We pack the tracked scene or read from file.
-		if _server_tracked_scenes.has(scene_path):
-			var scene_node = _server_tracked_scenes[scene_path]
-			if is_instance_valid(scene_node):
-				# Temporarily remove outlines
-				var outlines = []
-				var tree = scene_node.get_tree()
-				if tree:
-					for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
-						if is_instance_valid(node) and node.is_ancestor_of(scene_node):
-							outlines.append({"node": node, "parent": node.get_parent()})
-					for node in tree.get_nodes_in_group("TeamCreateCursors"):
-						if is_instance_valid(node) and node.is_ancestor_of(scene_node):
-							outlines.append({"node": node, "parent": node.get_parent()})
+	# This is called on the standalone server (or when editor scene is not the active tab).
+	# We pack the tracked scene or read from file.
+	if _server_tracked_scenes.has(scene_path):
+		var scene_node = _server_tracked_scenes[scene_path]
+		if is_instance_valid(scene_node):
+			# Temporarily remove outlines
+			var outlines = []
+			var tree = scene_node.get_tree() if scene_node.is_inside_tree() else null
+			if tree:
+				for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
+					if is_instance_valid(node) and node.is_ancestor_of(scene_node):
+						outlines.append({"node": node, "parent": node.get_parent()})
+				for node in tree.get_nodes_in_group("TeamCreateCursors"):
+					if is_instance_valid(node) and node.is_ancestor_of(scene_node):
+						outlines.append({"node": node, "parent": node.get_parent()})
 
-				for data in outlines:
-					data["parent"].remove_child(data["node"])
+			for data in outlines:
+				data["parent"].remove_child(data["node"])
 
-				var packed = PackedScene.new()
-				if packed.pack(scene_node) == OK:
-					var temp_path = "user://temp_scene_state_server_" + str(id) + ".tscn"
-					if ResourceSaver.save(packed, temp_path) == OK:
-						network._restore_dummy_paths_in_file(temp_path)
-						if FileAccess.file_exists(temp_path):
-							var bytes = FileAccess.get_file_as_bytes(temp_path)
-							_send_scene_bytes_to_peer(scene_path, bytes, id)
-						DirAccess.remove_absolute(temp_path)
+			var packed = PackedScene.new()
+			if packed.pack(scene_node) == OK:
+				var temp_path = "user://temp_scene_state_server_" + str(id) + ".tscn"
+				if ResourceSaver.save(packed, temp_path) == OK:
+					network._restore_dummy_paths_in_file(temp_path)
+					if FileAccess.file_exists(temp_path):
+						var bytes = FileAccess.get_file_as_bytes(temp_path)
+						_send_scene_bytes_to_peer(scene_path, bytes, id)
+					DirAccess.remove_absolute(temp_path)
 
-				for data in outlines:
-					if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
-						data["parent"].add_child(data["node"])
-				return
+			for data in outlines:
+				if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
+					data["parent"].add_child(data["node"])
+			return
 
-		# Fallback to disk: flush dirty scenes to disk first so peer gets freshest state
-		if FileAccess.file_exists(scene_path):
-			var bytes = FileAccess.get_file_as_bytes(scene_path)
-			_send_scene_bytes_to_peer(scene_path, bytes, id)
+	# Fallback to disk: flush dirty scenes to disk first so peer gets freshest state
+	if FileAccess.file_exists(scene_path):
+		var bytes = FileAccess.get_file_as_bytes(scene_path)
+		_send_scene_bytes_to_peer(scene_path, bytes, id)
 
 func _send_scene_bytes_to_peer(path: String, bytes: PackedByteArray, id: int):
 	var total_size = bytes.size()
@@ -839,7 +829,7 @@ func push_current_scene_to_peer(id: int):
 						data["parent"].add_child(data["node"])
 
 				if err == OK:
-					var peer_uid = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+					var peer_uid = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED) else 1
 					var temp_path = "user://temp_scene_state_" + str(peer_uid) + ".tscn"
 					if ResourceSaver.save(packed, temp_path) == OK:
 						network._restore_dummy_paths_in_file(temp_path)
@@ -925,9 +915,11 @@ func _on_node_added(node: Node):
 	mark_scene_dirty(scene_path)
 
 	# Immediately sync properties of the new node to catch duplicates
-	_sync_all_node_properties(node, new_id)
+	_sync_all_node_properties(node, new_id, scene_path)
 
-func _sync_all_node_properties(node: Node, id: String):
+func _sync_all_node_properties(node: Node, id: String, scene_path: String = ""):
+	if scene_path == "":
+		scene_path = _last_scene_path
 	# Create a temporary default instance to compare against
 	var type = node.get_class()
 	if not ClassDB.can_instantiate(type):
@@ -965,8 +957,8 @@ func _sync_all_node_properties(node: Node, id: String):
 						if val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path:
 							current_props[p.name] = val.resource_path
 						else:
-							if not val.is_connected("changed", _on_resource_changed.bind(node, p.name, val)):
-								val.connect("changed", _on_resource_changed.bind(node, p.name, val))
+							if not val.is_connected("changed", _on_resource_changed.bind(id, p.name, val)):
+								val.connect("changed", _on_resource_changed.bind(id, p.name, val))
 
 							var temp_path = "user://tc_sync_export_" + str(val.get_instance_id()) + ".tres"
 							ResourceSaver.save(val, temp_path)
@@ -1014,7 +1006,7 @@ func _sync_all_node_properties(node: Node, id: String):
 
 	# Send all non-default properties
 	for prop_name in current_props:
-		_send_update_node_property(id, prop_name, current_props[prop_name], _last_scene_path)
+		_send_update_node_property(id, prop_name, current_props[prop_name], scene_path)
 
 func _on_node_removed(node: Node):
 	var inst_id = node.get_instance_id()
@@ -1344,20 +1336,8 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 								break
 
 				if is_ready:
-					var temp_path = "user://tc_sync_import_" + str(value.hash()) + ".tres"
-					var file = FileAccess.open(temp_path, FileAccess.WRITE)
-					if file:
-						file.store_buffer(value["sub_resource_bytes"])
-						file.close()
-					var res = load(temp_path)
-					DirAccess.remove_absolute(temp_path)
-					if res is Resource:
-						var path = value.get("resource_path", "")
-						if path != "" and path.begins_with("res://") and not "::" in path:
-							res.take_over_path(path)
-						else:
-							res.resource_path = ""
-
+					var res = _import_sub_resource(value)
+					if res:
 						node.set(prop_name, res)
 				else:
 					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "sender_id": sender_id, "timeout": Time.get_ticks_msec() + 30000})
@@ -1784,7 +1764,7 @@ func request_scene_state(scene_path: String):
 				data["parent"].add_child(data["node"])
 
 		if err == OK:
-			var peer_uid = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+			var peer_uid = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED) else 1
 			var temp_path = "user://temp_scene_state_" + str(peer_uid) + ".tscn"
 			if ResourceSaver.save(packed, temp_path) == OK:
 				network._restore_dummy_paths_in_file(temp_path)
@@ -1922,12 +1902,14 @@ func _sync_cursor_throttled(delta):
 				var pos_3d = data.get("pos_3d", Transform3D())
 				if pos_3d != _local_3d_cursor_pos:
 					_local_3d_cursor_pos = pos_3d
-					rpc("update_peer_cursor_3d", multiplayer.get_unique_id() if multiplayer else 1, _local_3d_cursor_pos, _last_scene_path)
+					var my_uid = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED) else 1
+					rpc("update_peer_cursor_3d", my_uid, _local_3d_cursor_pos, _last_scene_path)
 			elif typeof(data) == TYPE_DICTIONARY and data.get("has_2d", false):
 				var pos_2d = data.get("pos_2d", Vector2.ZERO)
 				if pos_2d != _local_2d_cursor_pos:
 					_local_2d_cursor_pos = pos_2d
-					rpc("update_peer_cursor_2d", multiplayer.get_unique_id() if multiplayer else 1, _local_2d_cursor_pos, _last_scene_path)
+					var my_uid = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED) else 1
+					rpc("update_peer_cursor_2d", my_uid, _local_2d_cursor_pos, _last_scene_path)
 
 
 @rpc("any_peer", "unreliable")
@@ -2217,6 +2199,8 @@ func _apply_connections(node: Node, connections_data: Array, current_scene: Node
 			node.connect(c_data["signal"], callable, c_data["flags"])
 
 func _safe_resource_exists(path: String) -> bool:
+	if network and network.get("is_standalone_server"):
+		return FileAccess.file_exists(path)
 	if not ResourceLoader.exists(path):
 		return false
 	var import_path = path + ".import"
@@ -2229,10 +2213,71 @@ func _safe_resource_exists(path: String) -> bool:
 					return false
 	return true
 
-func _on_resource_changed(node: Node, prop_name: String, res: Resource):
-	if not is_instance_valid(node):
+func _import_sub_resource(value: Dictionary) -> Resource:
+	var temp_path = "user://tc_sync_import_" + str(value.hash()) + ".tres"
+	var file = FileAccess.open(temp_path, FileAccess.WRITE)
+	if file:
+		if network and network.get("is_standalone_server"):
+			var s_text = value.get("sub_resource_text", "")
+			if s_text != "":
+				var ext_regex = RegEx.new()
+				ext_regex.compile("\\[ext_resource.*?\\]")
+				var p_regex = RegEx.new()
+				p_regex.compile('path="(res://[^"]+)"')
+				var t_regex = RegEx.new()
+				t_regex.compile('type="([^"]+)"')
+				for m in ext_regex.search_all(s_text):
+					var full_m = m.get_string()
+					var p_m = p_regex.search(full_m)
+					var t_m = t_regex.search(full_m)
+					if p_m:
+						var orig_p = p_m.get_string(1)
+						var r_type = t_m.get_string(1) if t_m else ""
+						var can_load = ResourceLoader.exists(orig_p)
+						if can_load:
+							var import_path = orig_p + ".import"
+							if FileAccess.file_exists(import_path):
+								var config = ConfigFile.new()
+								if config.load(import_path) == OK:
+									var dest_files = config.get_value("deps", "dest_files", [])
+									for dest_file in dest_files:
+										if not FileAccess.file_exists(dest_file):
+											can_load = false
+											break
+						if not can_load:
+							var dummy_p = network._get_or_create_dummy_resource(orig_p, r_type)
+							var new_m = full_m.replace('path="' + orig_p + '"', 'path="' + dummy_p + '"')
+							var uid_regex = RegEx.new()
+							uid_regex.compile('uid="uid://.*?"\\s*')
+							new_m = uid_regex.sub(new_m, "")
+							s_text = s_text.replace(full_m, new_m)
+				file.store_string(s_text)
+			else:
+				file.store_buffer(value["sub_resource_bytes"])
+		else:
+			file.store_buffer(value["sub_resource_bytes"])
+		file.close()
+
+	var res = load(temp_path)
+	DirAccess.remove_absolute(temp_path)
+	if res is Resource:
+		var path = value.get("resource_path", "")
+		if path != "" and path.begins_with("res://") and not "::" in path:
+			res.take_over_path(path)
+		else:
+			res.resource_path = ""
+		return res
+	return null
+
+func _on_resource_changed(target, prop_name: String, res: Resource):
+	var id = ""
+	if typeof(target) == TYPE_STRING:
+		id = target
+	elif is_instance_valid(target) and target is Node:
+		id = network.assign_unique_id(target)
+	else:
 		return
-	var id = network.assign_unique_id(node)
+
 	# Force re-serialization of this resource next frame
 	if _last_tracked_properties.has(id) and _last_tracked_properties[id].has(prop_name):
 		_last_tracked_properties[id].erase(prop_name)

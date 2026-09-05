@@ -392,7 +392,7 @@ func _process_console_command(input: String):
 				continue # Skip the server
 			var info = peers[id]
 			var ip_str = "N/A"
-			if multiplayer.multiplayer_peer is ENetMultiplayerPeer:
+			if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer is ENetMultiplayerPeer:
 				ip_str = multiplayer.multiplayer_peer.get_peer(id).get_remote_address()
 			tc_print_rich("[color=white]- " + info["username"] + " (ID: " + str(id) + ", IP: " + ip_str + ")[/color]")
 			count += 1
@@ -485,20 +485,23 @@ func _deferred_stop():
 
 func kick_peer(id: int):
 	if is_server and id != 1:
-		if multiplayer.multiplayer_peer is ENetMultiplayerPeer:
+		if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer is ENetMultiplayerPeer:
 			multiplayer.multiplayer_peer.disconnect_peer(id)
 		tc_print("Kicked peer ", id)
 
 func update_local_username(new_name: String):
 	_local_username = new_name
-	if not is_inside_tree():
+	if not is_inside_tree() or multiplayer == null:
 		return
-	if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
-		var my_id = multiplayer.get_unique_id()
-		if is_server:
-			request_username_change(my_id, _local_username)
-		elif my_id != 1:
-			rpc_id(1, "request_username_change", my_id, _local_username)
+	if not multiplayer.has_multiplayer_peer() or multiplayer.multiplayer_peer == null:
+		return
+	if multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+	var my_id = multiplayer.get_unique_id()
+	if is_server:
+		request_username_change(my_id, _local_username)
+	elif my_id != 1:
+		rpc_id(1, "request_username_change", my_id, _local_username)
 
 func host_server():
 	disconnect_peer()
@@ -527,7 +530,7 @@ func join_server(ip: String):
 		return
 	multiplayer.multiplayer_peer = peer
 	is_server = false
-	if multiplayer and multiplayer.has_multiplayer_peer():
+	if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 		_add_peer(multiplayer.get_unique_id())
 	if plugin:
 		plugin._force_close_all_scenes()
@@ -601,6 +604,8 @@ func _on_peer_connected(id: int):
 
 func _on_peer_disconnected(id: int):
 	tc_print("Peer disconnected: ", id)
+	if scene_sync and scene_sync._dirty_scenes.size() > 0:
+		scene_sync.save_dirty_scenes()
 	if peers.has(id):
 		peers.erase(id)
 	if ui:
@@ -634,12 +639,10 @@ func _on_connected_to_server():
 			file_sync.sync_completed.connect(_request_scene_from_server, CONNECT_ONE_SHOT)
 
 	# Send local username request if not server
-	if _local_username != "":
-		if not is_server and multiplayer.get_unique_id() != 1:
-			rpc_id(1, "request_username_change", multiplayer.get_unique_id(), _local_username)
-	else:
-		if not is_server and multiplayer.get_unique_id() != 1:
-			rpc_id(1, "request_username_change", multiplayer.get_unique_id(), "")
+	if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		var my_id = multiplayer.get_unique_id()
+		if not is_server and my_id != 1:
+			rpc_id(1, "request_username_change", my_id, _local_username if _local_username != "" else "")
 
 func _request_scene_from_server():
 	var ei = _get_editor_interface()
@@ -738,7 +741,7 @@ func _update_ui_state():
 		if peers.has(1) and peers[1].has("is_standalone") and peers[1]["is_standalone"]:
 			connected_to_standalone = true
 		ui.set_connected(is_server, connected_to_standalone)
-		var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+		var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED) else 1
 		var username = get_username(my_id)
 		var protocol = "Server" if connected_to_standalone else "LAN"
 		ui.status_label.text = "Status: " + username + " Connected (" + protocol + ")"
@@ -921,7 +924,7 @@ func _get_default_peer_info(id: int) -> Dictionary:
 	var rng = RandomNumberGenerator.new()
 	rng.seed = id
 	var color = _get_random_color(rng)
-	var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+	var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED) else 1
 	var username = _local_username if id == my_id and _local_username != "" else _get_random_name(rng)
 	var info = {"username": username, "color": color}
 	if id == 1 and is_standalone_server:
@@ -1013,11 +1016,11 @@ func receive_cached_chat_image(img_hash: String, bytes: PackedByteArray):
 		_update_local_chat_ui()
 
 func send_chat_message(text: String, image_path: String = ""):
-	if multiplayer.multiplayer_peer == null:
+	if not is_inside_tree() or multiplayer == null or not multiplayer.has_multiplayer_peer() or multiplayer.multiplayer_peer == null:
 		tc_print("Cannot send message. Not connected to a server.")
 		return
 	var peer_status = multiplayer.multiplayer_peer.get_connection_status()
-	if peer_status == MultiplayerPeer.CONNECTION_DISCONNECTED:
+	if peer_status != MultiplayerPeer.CONNECTION_CONNECTED:
 		tc_print("Cannot send message. Not connected to a server.")
 		return
 
