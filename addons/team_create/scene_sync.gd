@@ -557,14 +557,28 @@ func _process_pending_resource_properties():
 
 func _track_active_scene():
 	var current_scene = _get_edited_scene_root()
-	if not current_scene:
+	if not current_scene or not is_instance_valid(current_scene):
+		if _last_scene_path != "":
+			save_current_camera_for_scene(_last_scene_path, true)
+			_save_camera_cache()
+			_last_scene_path = ""
+			_local_3d_cursor_pos = Transform3D()
 		return
 
 	var cur_path = current_scene.scene_file_path
 	if cur_path == "":
+		if _last_scene_path != "":
+			save_current_camera_for_scene(_last_scene_path, true)
+			_save_camera_cache()
+			_last_scene_path = ""
+			_local_3d_cursor_pos = Transform3D()
 		return
 
 	if cur_path != _last_scene_path:
+		if _last_scene_path != "":
+			save_current_camera_for_scene(_last_scene_path, true)
+			_save_camera_cache()
+
 		_last_scene_path = cur_path
 		_last_tracked_properties.clear()
 		_pending_selection_nodes.clear()
@@ -573,7 +587,7 @@ func _track_active_scene():
 
 		# Tab switch protection: block cursor movement from overwriting cameras during transition
 		_is_switching_scene_tab = true
-		_tab_switch_cooldown = 0.4
+		_tab_switch_cooldown = 0.5
 		_local_3d_cursor_pos = Transform3D()
 
 		_index_scene_subresources(current_scene)
@@ -2004,7 +2018,9 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 						_is_reloading_scene = true
 						editor.reload_scene_from_path(path)
 						_defer_restore_camera(path)
-						_index_scene_subresources(current_scene)
+						var cur_reloaded = editor.get_edited_scene_root()
+						if is_instance_valid(cur_reloaded):
+							_index_scene_subresources(cur_reloaded)
 						get_tree().create_timer(0.5).timeout.connect(func():
 							_is_reloading_scene = false
 							if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
@@ -2528,8 +2544,8 @@ func _update_existing_subresource(existing_res: Resource, value: Dictionary) -> 
 	existing_res.emit_changed()
 	return true
 
-func _index_scene_subresources(node: Node):
-	if not is_instance_valid(node):
+func _index_scene_subresources(node):
+	if not is_instance_valid(node) or not (node is Node):
 		return
 	var props = node.get_property_list()
 	for p in props:
@@ -2663,6 +2679,8 @@ func _defer_restore_camera(scene_path: String):
 	_is_restoring_camera = true
 
 	if not _user_scene_cameras.has(scene_path):
+		_load_camera_cache()
+	if not _user_scene_cameras.has(scene_path):
 		_is_restoring_camera = false
 		return
 
@@ -2685,8 +2703,25 @@ func _defer_restore_camera(scene_path: String):
 	if cur_scn and cur_scn.scene_file_path == scene_path:
 		restore_camera_for_scene(scene_path)
 
+	# Final stabilization pass at 0.30s
+	await get_tree().create_timer(0.15).timeout
+	if token != _restore_camera_token:
+		return
+
+	cur_scn = _get_edited_scene_root()
+	if cur_scn and cur_scn.scene_file_path == scene_path:
+		restore_camera_for_scene(scene_path)
+
 	if token == _restore_camera_token:
 		_is_restoring_camera = false
+
+func on_scene_closed(filepath: String):
+	if filepath == "" or DisplayServer.get_name() == "headless":
+		return
+	_save_camera_cache()
+	if _last_scene_path == filepath:
+		_last_scene_path = ""
+		_local_3d_cursor_pos = Transform3D()
 
 func _exit_tree():
 	var cur_scn = _get_edited_scene_root()

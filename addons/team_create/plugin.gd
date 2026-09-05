@@ -49,6 +49,10 @@ func _enter_tree() -> void:
 		if not scene_saved.is_connected(_on_scene_saved):
 			scene_saved.connect(_on_scene_saved)
 
+	if has_signal("scene_closed"):
+		if not scene_closed.is_connected(_on_scene_closed):
+			scene_closed.connect(_on_scene_closed)
+
 	# Check for updates on load
 	check_for_updates()
 
@@ -59,6 +63,9 @@ func _exit_tree() -> void:
 
 	if has_signal("scene_saved") and scene_saved.is_connected(_on_scene_saved):
 		scene_saved.disconnect(_on_scene_saved)
+
+	if has_signal("scene_closed") and scene_closed.is_connected(_on_scene_closed):
+		scene_closed.disconnect(_on_scene_closed)
 
 	if dock:
 		remove_control_from_docks(dock)
@@ -82,6 +89,10 @@ func _exit_tree() -> void:
 func _on_scene_saved(filepath: String) -> void:
 	if network and network.has_method("on_local_scene_saved"):
 		network.on_local_scene_saved(filepath)
+
+func _on_scene_closed(filepath: String) -> void:
+	if network and network.has_method("on_scene_closed"):
+		network.on_scene_closed(filepath)
 
 func get_current_version() -> String:
 	var cfg = ConfigFile.new()

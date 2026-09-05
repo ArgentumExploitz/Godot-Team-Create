@@ -120,6 +120,9 @@ func _exit_tree():
 		# and attempting to wait will cause the server to hang on shutdown.
 		# Godot will forcefully clean up the thread when the process exits.
 
+func on_scene_closed(filepath: String) -> void:
+	if scene_sync and scene_sync.has_method("on_scene_closed"):
+		scene_sync.on_scene_closed(filepath)
 
 func _server_console_thread_func():
 	tc_print_rich("[color=green]Server console ready. Type /help for a list of commands.[/color]")
