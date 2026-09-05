@@ -21,6 +21,7 @@ var update_btn: Button
 
 var export_btn: Button
 var export_dialog: FileDialog
+var backup_scene_btn: Button
 
 
 var lan_container: VBoxContainer
@@ -28,8 +29,42 @@ var sync_status_btn: Button
 
 
 
+var _ui_built = false
+var _bold_labels = []
+var title_label: Label
+var status_header: Label
+var profile_header: Label
+var conn_header: Label
+var sync_header: Label
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_THEME_CHANGED or what == NOTIFICATION_READY:
+		_apply_theme_overrides()
+
 func _init() -> void:
 	name = "Sync Dashboard"
+	_build_ui()
+
+func _apply_theme_overrides() -> void:
+	if not is_inside_tree():
+		return
+	var bold_font = get_theme_font("bold", "Label") if has_theme_font("bold", "Label") else null
+	if bold_font:
+		for lbl in _bold_labels:
+			if is_instance_valid(lbl):
+				lbl.add_theme_font_override("font", bold_font)
+
+func _get_editor_settings() -> EditorSettings:
+	if Engine.is_editor_hint() and ClassDB.class_exists("EditorInterface"):
+		return EditorInterface.get_editor_settings()
+	if network and network.plugin and network.plugin.has_method("get_editor_interface"):
+		return network.plugin.get_editor_interface().get_editor_settings()
+	return null
+
+func _build_ui() -> void:
+	if _ui_built:
+		return
+	_ui_built = true
 
 	var scroll = ScrollContainer.new()
 	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 5)
@@ -42,10 +77,10 @@ func _init() -> void:
 	scroll.add_child(main_vbox)
 
 	# --- Title ---
-	var title_label = Label.new()
+	title_label = Label.new()
 	title_label.text = "Godot Team Create"
-	title_label.add_theme_font_override("font", get_theme_font("bold", "Label"))
 	title_label.add_theme_font_size_override("font_size", 18)
+	_bold_labels.append(title_label)
 	main_vbox.add_child(title_label)
 
 	# --- Panel Style ---
@@ -68,9 +103,9 @@ func _init() -> void:
 	var status_vbox = VBoxContainer.new()
 	status_panel.add_child(status_vbox)
 
-	var status_header = Label.new()
+	status_header = Label.new()
 	status_header.text = "Status & Users"
-	status_header.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	_bold_labels.append(status_header)
 	status_vbox.add_child(status_header)
 
 	status_label = Label.new()
@@ -101,9 +136,9 @@ func _init() -> void:
 	var profile_vbox = VBoxContainer.new()
 	profile_panel.add_child(profile_vbox)
 
-	var profile_header = Label.new()
+	profile_header = Label.new()
 	profile_header.text = "Profile"
-	profile_header.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	_bold_labels.append(profile_header)
 	profile_vbox.add_child(profile_header)
 
 	username_edit = LineEdit.new()
@@ -123,9 +158,9 @@ func _init() -> void:
 	conn_vbox.add_theme_constant_override("separation", 8)
 	conn_panel.add_child(conn_vbox)
 
-	var conn_header = Label.new()
+	conn_header = Label.new()
 	conn_header.text = "Connectivity"
-	conn_header.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	_bold_labels.append(conn_header)
 	conn_vbox.add_child(conn_header)
 
 	# LAN Container
@@ -194,9 +229,9 @@ func _init() -> void:
 	sync_vbox.add_theme_constant_override("separation", 8)
 	sync_panel.add_child(sync_vbox)
 
-	var sync_header = Label.new()
+	sync_header = Label.new()
 	sync_header.text = "Synchronization"
-	sync_header.add_theme_font_override("font", get_theme_font("bold", "Label"))
+	_bold_labels.append(sync_header)
 	sync_vbox.add_child(sync_header)
 
 	var sync_status_style = StyleBoxFlat.new()
@@ -247,6 +282,14 @@ func _init() -> void:
 	export_btn.pressed.connect(_on_export_pressed)
 	sync_vbox.add_child(export_btn)
 
+	backup_scene_btn = Button.new()
+	backup_scene_btn.text = "Create Backup"
+	backup_scene_btn.tooltip_text = "Create a timestamped snapshot backup of the current scene."
+	backup_scene_btn.disabled = true
+	backup_scene_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	backup_scene_btn.pressed.connect(_on_backup_scene_pressed)
+	sync_vbox.add_child(backup_scene_btn)
+
 	main_vbox.add_child(HSeparator.new())
 
 	update_btn = Button.new()
@@ -265,8 +308,11 @@ func _init() -> void:
 
 
 func _ready() -> void:
-	if network and network.plugin:
-		var settings = network.plugin.get_editor_interface().get_editor_settings()
+	_build_ui()
+	_apply_theme_overrides()
+
+	var settings = _get_editor_settings()
+	if settings:
 		if settings.has_setting("team_create/username"):
 			var saved_name = settings.get_setting("team_create/username")
 			if saved_name != "":
@@ -286,6 +332,7 @@ func set_connected(is_host: bool, connected_to_standalone: bool = false) -> void
 	push_scene_btn.disabled = false
 	sync_settings_btn.disabled = false
 	sync_files_btn.disabled = false
+	backup_scene_btn.disabled = false
 	sync_status_btn.text = "✓ Up to date!"
 	sync_status_btn.add_theme_color_override("font_color", Color.LIGHT_GREEN)
 
@@ -308,6 +355,7 @@ func set_disconnected() -> void:
 	push_scene_btn.disabled = true
 	sync_settings_btn.disabled = true
 	sync_files_btn.disabled = true
+	backup_scene_btn.disabled = true
 	sync_status_btn.text = "Not connected"
 	sync_status_btn.add_theme_color_override("font_color", Color.GRAY)
 
@@ -326,13 +374,17 @@ func update_users_count(count: int) -> void:
 			visible_count -= 1
 
 		var text = "Users: " + str(visible_count) + "\n"
+		var my_id = 0
+		if network.is_inside_tree() and network.multiplayer and network.multiplayer.has_multiplayer_peer():
+			my_id = network.multiplayer.get_unique_id()
+
 		for peer_id in network.peers:
 			if peer_id == 1 and has_standalone:
 				continue
 
 			var username = network.get_username(peer_id)
 			var color = network.get_user_color(peer_id).to_html()
-			if peer_id == network.multiplayer.get_unique_id():
+			if my_id != 0 and peer_id == my_id:
 				text += "[color=#" + color + "]" + username + " (You)[/color]\n"
 			else:
 				text += "[color=#" + color + "]" + username + "[/color]\n"
@@ -351,18 +403,16 @@ func show_server_message(msg: String) -> void:
 		)
 
 func _on_username_changed(new_text: String) -> void:
+	var settings = _get_editor_settings()
+	if settings:
+		settings.set_setting("team_create/username", new_text)
 	if network:
-		if network.plugin:
-			var settings = network.plugin.get_editor_interface().get_editor_settings()
-			settings.set_setting("team_create/username", new_text)
-
 		network.update_local_username(new_text)
 
 func _on_ip_changed(new_text: String) -> void:
-	if network:
-		if network.plugin:
-			var settings = network.plugin.get_editor_interface().get_editor_settings()
-			settings.set_setting("team_create/last_ip", new_text)
+	var settings = _get_editor_settings()
+	if settings:
+		settings.set_setting("team_create/last_ip", new_text)
 
 func _on_host_pressed() -> void:
 	if network:
@@ -387,6 +437,15 @@ func _on_sync_settings_pressed() -> void:
 func _on_sync_files_pressed() -> void:
 	if network:
 		network.sync_all_files()
+
+func _on_backup_scene_pressed() -> void:
+	if network:
+		network.create_backup()
+		backup_scene_btn.text = "✓ Backup Created!"
+		get_tree().create_timer(2.5).timeout.connect(func():
+			if is_instance_valid(backup_scene_btn):
+				backup_scene_btn.text = "Create Backup"
+		)
 
 func _on_update_pressed() -> void:
 	if network and network.plugin:

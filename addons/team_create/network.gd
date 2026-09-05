@@ -18,6 +18,7 @@ var _color_assignment_counter = 0
 var _assigned_colors = []
 var file_sync
 var scene_sync
+var node_locks: Dictionary = {}
 
 var _local_username = ""
 # Console thread
@@ -39,6 +40,13 @@ var max_file_size: int = 0
 var chat_history = []
 var chat_id_counter = 0
 const CHAT_HISTORY_FILE = "user://team_chat_history.json"
+
+func _get_editor_interface():
+	if Engine.is_editor_hint() and Engine.has_singleton("EditorInterface"):
+		return Engine.get_singleton("EditorInterface")
+	if plugin and plugin.has_method("get_editor_interface"):
+		return plugin.get_editor_interface()
+	return null
 
 
 func tc_print(msg: String, arg1="", arg2="", arg3=""):
@@ -87,7 +95,16 @@ func _ready():
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
+			scene_sync.flush_all_scenes_to_disk()
+		_save_chat_history()
+
 func _exit_tree():
+	if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
+		scene_sync.flush_all_scenes_to_disk()
+	_save_chat_history()
 	if _console_thread and _console_thread.is_started():
 		_console_should_exit = true
 		# We do not wait_to_finish() here because read_string_from_stdin() blocks infinitely
@@ -120,6 +137,8 @@ func _process_console_command(input: String):
 			tc_print_rich("[color=white]/unadmin <user or id>[/color]   - Removes admin privileges from a user")
 			tc_print_rich("[color=white]/chatimgs <true/false>[/color] - Lets users send images in the chat")
 			tc_print_rich("[color=white]/filesize <num or none>[/color] - Sets maximum file size limit")
+			tc_print_rich("[color=white]/backup [scene][/color]       - Creates a snapshot backup of scenes")
+			tc_print_rich("[color=white]/autobackup <true/false>[/color] - Toggles automatic backups (default: false)")
 			tc_print_rich("[color=cyan]--------------------------[/color]")
 		else:
 			tc_print_rich("[color=cyan]--- Available Commands (Page 1) ---[/color]")
@@ -403,6 +422,24 @@ func _process_console_command(input: String):
 		var user_count = peers.size() - 1 if peers.has(1) else peers.size()
 		tc_print_rich("[color=white]Total users connected:[/color] " + str(user_count))
 		tc_print_rich("[color=cyan]-------------------[/color]")
+
+	elif cmd == "/backup" or cmd == "backup":
+		var target_path = args[1] if args.size() > 1 else ""
+		create_server_backup(target_path)
+
+	elif cmd == "/autobackup" or cmd == "autobackup":
+		if args.size() < 2:
+			tc_print_rich("[color=orange]Usage: /autobackup <true/false> (Current: " + str(file_sync.auto_backups_enabled if file_sync else false) + ")[/color]")
+		else:
+			var val = args[1].to_lower()
+			if val == "true":
+				if file_sync: file_sync.auto_backups_enabled = true
+				tc_print_rich("[color=green]Automatic backups enabled.[/color]")
+			elif val == "false":
+				if file_sync: file_sync.auto_backups_enabled = false
+				tc_print_rich("[color=green]Automatic backups disabled.[/color]")
+			else:
+				tc_print_rich("[color=red]Invalid argument. Use true or false.[/color]")
 	else:
 		tc_print_rich("[color=red]Unknown command: " + cmd + "[/color]")
 
@@ -436,6 +473,8 @@ func _deferred_restart():
 	_deferred_stop()
 
 func _deferred_stop():
+	if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
+		scene_sync.flush_all_scenes_to_disk()
 	disconnect_peer()
 	_save_chat_history()
 
@@ -452,8 +491,10 @@ func kick_peer(id: int):
 
 func update_local_username(new_name: String):
 	_local_username = new_name
-	var my_id = multiplayer.get_unique_id()
-	if multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+	if not is_inside_tree():
+		return
+	if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		var my_id = multiplayer.get_unique_id()
 		if is_server:
 			request_username_change(my_id, _local_username)
 		elif my_id != 1:
@@ -486,12 +527,16 @@ func join_server(ip: String):
 		return
 	multiplayer.multiplayer_peer = peer
 	is_server = false
-	_add_peer(multiplayer.get_unique_id())
+	if multiplayer and multiplayer.has_multiplayer_peer():
+		_add_peer(multiplayer.get_unique_id())
 	if plugin:
 		plugin._force_close_all_scenes()
 
 func disconnect_peer():
-	var was_connected = multiplayer.multiplayer_peer != null
+	var was_connected = false
+	if is_inside_tree() and multiplayer:
+		was_connected = multiplayer.has_multiplayer_peer()
+		multiplayer.multiplayer_peer = null
 	if peer:
 		peer.close()
 	if scene_sync:
@@ -501,7 +546,6 @@ func disconnect_peer():
 		scene_sync._node_names.clear()
 		scene_sync._pre_removal_paths.clear()
 		scene_sync._last_selected_ids.clear()
-	multiplayer.multiplayer_peer = null
 	peers.clear()
 	_color_assignment_counter = 0
 	_assigned_colors.clear()
@@ -562,10 +606,22 @@ func _on_peer_disconnected(id: int):
 	if ui:
 		ui.update_users_count(peers.size())
 
-	# Clear selection outlines for disconnected peer
+	# Clear selection outlines and locks for disconnected peer
 	if scene_sync:
 		scene_sync.clear_peer_selections(id)
 		scene_sync._clear_peer_cursor(id)
+		if scene_sync.has_method("release_all_locks_for_peer"):
+			scene_sync.release_all_locks_for_peer(id)
+
+	if is_server and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		var to_release = []
+		for nid in node_locks.keys():
+			if node_locks[nid] == id:
+				to_release.append(nid)
+		for nid in to_release:
+			node_locks.erase(nid)
+			rpc("sync_node_unlock", nid, "")
+			sync_node_unlock(nid, "")
 
 func _on_connected_to_server():
 	tc_print("Connected to server successfully!")
@@ -586,18 +642,25 @@ func _on_connected_to_server():
 			rpc_id(1, "request_username_change", multiplayer.get_unique_id(), "")
 
 func _request_scene_from_server():
-	if plugin:
-		var efs = plugin.get_editor_interface().get_resource_filesystem()
-		# Give a slight delay for scans to start/catch up
-		await get_tree().create_timer(0.6).timeout
-		# Wait for scanning to finish
-		while efs.is_scanning():
-			await get_tree().process_frame
+	var ei = _get_editor_interface()
+	if ei:
+		var efs = ei.get_resource_filesystem()
+		if efs:
+			# Give a slight delay for scans to start/catch up
+			await get_tree().create_timer(0.6).timeout
+			# Wait for scanning to finish
+			while efs.is_scanning():
+				await get_tree().process_frame
 
 		var scene_path = ""
-		var current_scene = plugin.get_editor_interface().get_edited_scene_root()
+		var current_scene = ei.get_edited_scene_root()
 		if current_scene:
 			scene_path = current_scene.scene_file_path
+		else:
+			var main_scene = ProjectSettings.get_setting("application/run/main_scene", "")
+			if main_scene != "" and FileAccess.file_exists(main_scene):
+				ei.open_scene_from_path(main_scene)
+				scene_path = main_scene
 		rpc_id(1, "request_push_scene", scene_path)
 	else:
 		rpc_id(1, "request_push_scene", "")
@@ -639,8 +702,9 @@ func show_popup(msg: String):
 	dialog.confirmed.connect(dialog.queue_free)
 	dialog.canceled.connect(dialog.queue_free)
 
-	if plugin:
-		plugin.get_editor_interface().get_base_control().add_child(dialog)
+	var ei = _get_editor_interface()
+	if ei and ei.get_base_control():
+		ei.get_base_control().add_child(dialog)
 		dialog.call_deferred("popup_centered")
 	else:
 		# Fallback if plugin reference is not available (e.g. headless)
@@ -674,7 +738,8 @@ func _update_ui_state():
 		if peers.has(1) and peers[1].has("is_standalone") and peers[1]["is_standalone"]:
 			connected_to_standalone = true
 		ui.set_connected(is_server, connected_to_standalone)
-		var username = get_username(multiplayer.get_unique_id())
+		var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+		var username = get_username(my_id)
 		var protocol = "Server" if connected_to_standalone else "LAN"
 		ui.status_label.text = "Status: " + username + " Connected (" + protocol + ")"
 		ui.update_users_count(peers.size())
@@ -774,23 +839,49 @@ func sync_all_files_to_peer(id: int):
 	if file_sync:
 		file_sync.sync_all_files_to_peer(id)
 
-# Unique ID management for nodes (Using node paths for consistency across network without modifying .tscn files on every connection)
+# Unique ID management for nodes (Using node paths with UUID fallback for robustness across renames/reparenting)
 static func assign_unique_id(node: Node) -> String:
-	# Using the absolute path from the scene root is deterministic and avoids .tscn serialization issues
-	var tree = node.get_tree()
-	if tree and tree.edited_scene_root:
-		var root = tree.edited_scene_root
+	if not is_instance_valid(node):
+		return ""
+	if not node.has_meta("_tc_uuid"):
+		var uid = str(ResourceUID.create_id())
+		node.set_meta("_tc_uuid", uid)
+
+	var root: Node = null
+	if node.owner:
+		root = node.owner
+	elif node.is_inside_tree():
+		var tree = node.get_tree()
+		if tree and tree.edited_scene_root:
+			root = tree.edited_scene_root
+
+	if root:
 		if node == root:
 			return "."
-		return root.get_path_to(node)
-	return node.get_path()
+		return str(root.get_path_to(node))
+	if node.is_inside_tree():
+		return str(node.get_path())
+	return "."
+
+static func _find_node_by_uuid(parent: Node, uuid: String) -> Node:
+	if not is_instance_valid(parent):
+		return null
+	if parent.has_meta("_tc_uuid") and parent.get_meta("_tc_uuid") == uuid:
+		return parent
+	for child in parent.get_children():
+		var found = _find_node_by_uuid(child, uuid)
+		if found:
+			return found
+	return null
 
 static func get_node_by_unique_id(root: Node, id: String) -> Node:
+	if not is_instance_valid(root):
+		return null
 	if id == ".":
 		return root
 	if root.has_node(id):
 		return root.get_node(id)
-	return null
+	return _find_node_by_uuid(root, id)
 
 func _get_random_color(rng: RandomNumberGenerator) -> Color:
 	return Color.from_hsv(rng.randf(), 0.8, 0.9)
@@ -830,7 +921,8 @@ func _get_default_peer_info(id: int) -> Dictionary:
 	var rng = RandomNumberGenerator.new()
 	rng.seed = id
 	var color = _get_random_color(rng)
-	var username = _local_username if id == multiplayer.get_unique_id() and _local_username != "" else _get_random_name(rng)
+	var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+	var username = _local_username if id == my_id and _local_username != "" else _get_random_name(rng)
 	var info = {"username": username, "color": color}
 	if id == 1 and is_standalone_server:
 		info["is_standalone"] = true
@@ -887,6 +979,39 @@ func sync_chat_history(history: Array):
 	_save_chat_history()
 	_update_local_chat_ui()
 
+	# Check for any missing images in history and request them from server
+	for m in chat_history:
+		if m.get("type", "") == "image":
+			var img_hash = m.get("image_hash", "")
+			if img_hash != "":
+				var cache_path = "user://team_create_chat".path_join(img_hash + ".png")
+				if not FileAccess.file_exists(cache_path):
+					rpc_id(1, "request_cached_chat_image", img_hash)
+
+@rpc("any_peer", "reliable")
+func request_cached_chat_image(img_hash: String):
+	if not is_server: return
+	var sender_id = multiplayer.get_remote_sender_id()
+	var cache_path = "user://team_create_chat".path_join(img_hash + ".png")
+	if FileAccess.file_exists(cache_path):
+		var bytes = FileAccess.get_file_as_bytes(cache_path)
+		if bytes.size() > 0:
+			rpc_id(sender_id, "receive_cached_chat_image", img_hash, bytes)
+
+@rpc("any_peer", "reliable")
+func receive_cached_chat_image(img_hash: String, bytes: PackedByteArray):
+	var sender_id = multiplayer.get_remote_sender_id()
+	if not is_server and sender_id != 1: return
+	var cache_dir = "user://team_create_chat"
+	if not DirAccess.dir_exists_absolute(cache_dir):
+		DirAccess.make_dir_recursive_absolute(cache_dir)
+	var cache_path = cache_dir.path_join(img_hash + ".png")
+	var f = FileAccess.open(cache_path, FileAccess.WRITE)
+	if f:
+		f.store_buffer(bytes)
+		f.close()
+		_update_local_chat_ui()
+
 func send_chat_message(text: String, image_path: String = ""):
 	if multiplayer.multiplayer_peer == null:
 		tc_print("Cannot send message. Not connected to a server.")
@@ -897,6 +1022,10 @@ func send_chat_message(text: String, image_path: String = ""):
 		return
 
 	var my_id = multiplayer.get_unique_id()
+	if image_path != "":
+		_send_image_message(my_id, image_path)
+		return
+
 	if is_server:
 		if text.begins_with("/"):
 			if is_standalone_server or admins.has(my_id):
@@ -906,16 +1035,161 @@ func send_chat_message(text: String, image_path: String = ""):
 				tc_print("You do not have permission to use admin commands.")
 				return
 		if not chat_locked:
-			if not chat_images_enabled and image_path != "": return
-			_process_new_chat_message(my_id, text, image_path)
+			_process_new_chat_message(my_id, text)
 	else:
 		if my_id == 1 or my_id == 0:
 			tc_print("Cannot send message. Not connected to a server.")
 			return
-		rpc_id(1, "request_chat_message", text, image_path)
+		rpc_id(1, "request_chat_message", text)
+
+func _send_image_message(sender_id: int, image_path: String):
+	if not chat_images_enabled:
+		tc_print("Chat images are currently disabled on this server.")
+		return
+	var img = Image.load_from_file(image_path)
+	if not img or img.is_empty():
+		var global_path = ProjectSettings.globalize_path(image_path)
+		img = Image.load_from_file(global_path)
+	if not img or img.is_empty():
+		if ResourceLoader.exists(image_path):
+			var res = load(image_path)
+			if res is Texture2D:
+				img = res.get_image()
+	if not img or img.is_empty():
+		tc_print("Failed to load image from path: ", image_path)
+		return
+
+	# Downscale if exceeding 1920x1080
+	if img.get_width() > 1920 or img.get_height() > 1080:
+		var aspect = float(img.get_width()) / float(img.get_height())
+		if aspect > 1.0:
+			img.resize(1920, int(1920.0 / aspect), Image.INTERPOLATE_LANCZOS)
+		else:
+			img.resize(int(1080.0 * aspect), 1080, Image.INTERPOLATE_LANCZOS)
+
+	var img_bytes = img.save_png_to_buffer()
+	if img_bytes.size() > 5 * 1024 * 1024:
+		tc_print("Image too large to send (exceeds 5MB).")
+		return
+
+	var img_hash = img_bytes.hex_encode().md5_text()
+	var cache_dir = "user://team_create_chat"
+	if not DirAccess.dir_exists_absolute(cache_dir):
+		DirAccess.make_dir_recursive_absolute(cache_dir)
+	var cache_path = cache_dir.path_join(img_hash + ".png")
+	var f = FileAccess.open(cache_path, FileAccess.WRITE)
+	if f:
+		f.store_buffer(img_bytes)
+		f.close()
+
+	if is_server:
+		_process_new_chat_image(sender_id, img_hash, img_bytes)
+	else:
+		rpc_id(1, "request_chat_image", img_hash, img_bytes)
 
 @rpc("any_peer", "reliable")
-func request_chat_message(text: String, image_path: String):
+func request_chat_image(img_hash: String, img_bytes: PackedByteArray):
+	if not is_server:
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	if chat_locked or muted_users.has(sender_id) or not chat_images_enabled:
+		return
+	if img_bytes.size() > 5 * 1024 * 1024:
+		return
+	_process_new_chat_image(sender_id, img_hash, img_bytes)
+
+func _process_new_chat_image(sender_id: int, img_hash: String, img_bytes: PackedByteArray):
+	var cache_dir = "user://team_create_chat"
+	if not DirAccess.dir_exists_absolute(cache_dir):
+		DirAccess.make_dir_recursive_absolute(cache_dir)
+	var cache_path = cache_dir.path_join(img_hash + ".png")
+	if not FileAccess.file_exists(cache_path):
+		var f = FileAccess.open(cache_path, FileAccess.WRITE)
+		if f:
+			f.store_buffer(img_bytes)
+			f.close()
+
+	var username = get_username(sender_id)
+	var color = get_user_color(sender_id)
+	var msg = {
+		"id": chat_id_counter,
+		"type": "image",
+		"sender_id": sender_id,
+		"sender_name": username,
+		"sender_color": color.to_html(false),
+		"image_hash": img_hash,
+		"pinned": false
+	}
+	chat_id_counter += 1
+	chat_history.append(msg)
+	_save_chat_history()
+	tc_print("[Chat] " + username + " sent an image (hash: " + img_hash.substr(0, 8) + ")")
+
+	rpc("receive_chat_image", msg, img_bytes)
+	receive_chat_image(msg, img_bytes)
+
+@rpc("any_peer", "reliable")
+func receive_chat_image(msg: Dictionary, img_bytes: PackedByteArray):
+	var sender_id = multiplayer.get_remote_sender_id()
+	if not is_server and sender_id != 1 and sender_id != 0:
+		return
+
+	var img_hash = msg.get("image_hash", "")
+	if img_hash != "":
+		var cache_dir = "user://team_create_chat"
+		if not DirAccess.dir_exists_absolute(cache_dir):
+			DirAccess.make_dir_recursive_absolute(cache_dir)
+		var cache_path = cache_dir.path_join(img_hash + ".png")
+		if not FileAccess.file_exists(cache_path) and img_bytes.size() > 0:
+			var f = FileAccess.open(cache_path, FileAccess.WRITE)
+			if f:
+				f.store_buffer(img_bytes)
+				f.close()
+
+	if not is_server:
+		chat_history.append(msg)
+		_save_chat_history()
+
+	_add_message_to_local_ui(msg)
+
+@rpc("any_peer", "reliable")
+func request_chat_image_by_hash(img_hash: String):
+	if not is_server:
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	var cache_path = "user://team_create_chat".path_join(img_hash + ".png")
+	if FileAccess.file_exists(cache_path):
+		var f = FileAccess.open(cache_path, FileAccess.READ)
+		if f:
+			var bytes = f.get_buffer(f.get_length())
+			f.close()
+			rpc_id(sender_id, "deliver_chat_image_by_hash", img_hash, bytes)
+
+@rpc("any_peer", "reliable")
+func deliver_chat_image_by_hash(img_hash: String, img_bytes: PackedByteArray):
+	if multiplayer.get_remote_sender_id() != 1:
+		return
+	var cache_dir = "user://team_create_chat"
+	if not DirAccess.dir_exists_absolute(cache_dir):
+		DirAccess.make_dir_recursive_absolute(cache_dir)
+	var cache_path = cache_dir.path_join(img_hash + ".png")
+	var f = FileAccess.open(cache_path, FileAccess.WRITE)
+	if f:
+		f.store_buffer(img_bytes)
+		f.close()
+	if chat_window and chat_window.has_method("refresh_images"):
+		chat_window.refresh_images()
+
+func get_chat_image_path(img_hash: String) -> String:
+	var path = "user://team_create_chat".path_join(img_hash + ".png")
+	if FileAccess.file_exists(path):
+		return path
+	if not is_server and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		rpc_id(1, "request_chat_image_by_hash", img_hash)
+	return ""
+
+@rpc("any_peer", "reliable")
+func request_chat_message(text: String, legacy_image_path: String = ""):
 	if not is_server: return
 	var sender_id = multiplayer.get_remote_sender_id()
 
@@ -926,10 +1200,9 @@ func request_chat_message(text: String, image_path: String):
 
 	if chat_locked: return
 	if muted_users.has(sender_id): return
-	if not chat_images_enabled and image_path != "": return
-	_process_new_chat_message(sender_id, text, image_path)
+	_process_new_chat_message(sender_id, text)
 
-func _process_new_chat_message(sender_id: int, text: String, image_path: String):
+func _process_new_chat_message(sender_id: int, text: String):
 	var username = get_username(sender_id)
 	var color = get_user_color(sender_id)
 
@@ -939,19 +1212,11 @@ func _process_new_chat_message(sender_id: int, text: String, image_path: String)
 		"sender_id": sender_id,
 		"sender_name": username,
 		"sender_color": color.to_html(false),
-		"pinned": false
+		"pinned": false,
+		"text": text
 	}
 	chat_id_counter += 1
-
-	if image_path != "":
-		msg["type"] = "image"
-		# If they drag from local filesystem and its outside res://, we would need to transfer it
-		# For now we assume they drag from inside the project, or we just take the path.
-		msg["path"] = image_path
-		tc_print("[Chat] " + username + " sent an image: " + image_path)
-	else:
-		msg["text"] = text
-		tc_print("[Chat] " + username + ": " + text)
+	tc_print("[Chat] " + username + ": " + text)
 
 	chat_history.append(msg)
 	_save_chat_history()
@@ -1025,3 +1290,144 @@ func broadcast_join_message(id: int):
 	_save_chat_history()
 	rpc("receive_chat_message", msg)
 	receive_chat_message(msg)
+
+# --- Node Locking Coordination ---
+@rpc("any_peer", "reliable")
+func request_node_lock(node_id: String, scene_path: String = ""):
+	if not is_server:
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	if sender_id == 0: sender_id = 1
+	if not node_locks.has(node_id) or node_locks[node_id] == sender_id:
+		node_locks[node_id] = sender_id
+		rpc("sync_node_lock", node_id, sender_id, scene_path)
+		sync_node_lock(node_id, sender_id, scene_path)
+	else:
+		rpc_id(sender_id, "node_lock_denied", node_id)
+
+@rpc("any_peer", "reliable")
+func release_node_lock(node_id: String, scene_path: String = ""):
+	if not is_server:
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	if sender_id == 0: sender_id = 1
+	if node_locks.has(node_id) and node_locks[node_id] == sender_id:
+		node_locks.erase(node_id)
+		rpc("sync_node_unlock", node_id, scene_path)
+		sync_node_unlock(node_id, scene_path)
+
+@rpc("any_peer", "reliable")
+func sync_node_lock(node_id: String, peer_id: int, scene_path: String = ""):
+	if scene_sync and scene_sync.has_method("set_node_lock"):
+		scene_sync.set_node_lock(node_id, peer_id)
+
+@rpc("any_peer", "reliable")
+func sync_node_unlock(node_id: String, scene_path: String = ""):
+	if scene_sync and scene_sync.has_method("remove_node_lock"):
+		scene_sync.remove_node_lock(node_id)
+
+@rpc("any_peer", "reliable")
+func node_lock_denied(node_id: String):
+	if scene_sync and scene_sync.has_method("on_node_lock_denied"):
+		scene_sync.on_node_lock_denied(node_id)
+
+# --- Manual Scene Save Synchronization ---
+func on_local_scene_saved(filepath: String):
+	if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		if FileAccess.file_exists(filepath):
+			var bytes = FileAccess.get_file_as_bytes(filepath)
+			if is_server:
+				rpc("receive_manual_save", filepath, bytes)
+			else:
+				rpc_id(1, "receive_manual_save", filepath, bytes)
+
+@rpc("any_peer", "reliable")
+func receive_manual_save(filepath: String, bytes: PackedByteArray):
+	var sender_id = multiplayer.get_remote_sender_id()
+	if is_server and sender_id != 0:
+		for pid in multiplayer.get_peers() if multiplayer else []:
+			if pid != sender_id:
+				rpc_id(pid, "receive_manual_save", filepath, bytes)
+
+	if bytes.size() > 0:
+		if file_sync and file_sync.has_method("backup_scene"):
+			file_sync.backup_scene(filepath)
+		var f = FileAccess.open(filepath + ".tmp", FileAccess.WRITE)
+		if f:
+			f.store_buffer(bytes)
+			f.close()
+			if DirAccess.remove_absolute(filepath) == OK or not FileAccess.file_exists(filepath):
+				DirAccess.rename_absolute(filepath + ".tmp", filepath)
+			tc_print("Team Create: Synchronized manual save from peer for: ", filepath)
+		if is_standalone_server and scene_sync:
+			if scene_sync._server_tracked_scenes.has(filepath):
+				var s = scene_sync._server_tracked_scenes[filepath]
+				if is_instance_valid(s):
+					s.queue_free()
+				scene_sync._server_tracked_scenes.erase(filepath)
+			var res = scene_sync._safe_load_headless(filepath)
+			if res.packed and res.packed is PackedScene:
+				var inst = res.packed.instantiate()
+				if inst:
+					inst.set_meta("scene_file_path", filepath)
+					scene_sync._server_tracked_scenes[filepath] = inst
+					get_tree().root.add_child(inst)
+		else:
+			var iface = _get_editor_interface()
+			if iface:
+				if iface.get_resource_filesystem():
+					iface.get_resource_filesystem().reimport_files(PackedStringArray([filepath]))
+				if iface.has_method("reload_scene_from_path"):
+					iface.reload_scene_from_path(filepath)
+
+func create_server_backup(target_path: String = ""):
+	var backed_up = []
+	if target_path != "":
+		if file_sync and file_sync.has_method("backup_scene"):
+			var res = file_sync.backup_scene(target_path, true)
+			if res != "": backed_up.append(res)
+	else:
+		if scene_sync and scene_sync._server_tracked_scenes.size() > 0:
+			for path in scene_sync._server_tracked_scenes.keys():
+				if file_sync and file_sync.has_method("backup_scene"):
+					var res = file_sync.backup_scene(path, true)
+					if res != "": backed_up.append(res)
+		elif file_sync:
+			for f in file_sync.get_all_files("res://"):
+				if f.ends_with(".tscn") or f.ends_with(".scn"):
+					var res = file_sync.backup_scene(f, true)
+					if res != "": backed_up.append(res)
+
+	if backed_up.size() > 0:
+		tc_print_rich("[color=green]Backup created (" + str(backed_up.size()) + " files):[/color]")
+		for b in backed_up:
+			tc_print_rich("  [color=cyan]" + b + "[/color]")
+	else:
+		tc_print_rich("[color=yellow]No scene files found to back up.[/color]")
+
+@rpc("any_peer", "reliable")
+func request_server_backup(target_path: String = ""):
+	if not is_server:
+		return
+	create_server_backup(target_path)
+
+func create_backup(target_path: String = "") -> Array:
+	var backed_up = []
+	var path_to_backup = target_path
+	if path_to_backup == "":
+		var ei = _get_editor_interface()
+		if ei and ei.get_edited_scene_root():
+			path_to_backup = ei.get_edited_scene_root().scene_file_path
+
+	if path_to_backup != "" and file_sync and file_sync.has_method("backup_scene"):
+		var res = file_sync.backup_scene(path_to_backup, true)
+		if res != "":
+			backed_up.append(res)
+
+	if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		if is_server:
+			create_server_backup(path_to_backup)
+		else:
+			rpc_id(1, "request_server_backup", path_to_backup)
+
+	return backed_up

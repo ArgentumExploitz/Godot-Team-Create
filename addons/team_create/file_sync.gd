@@ -3,7 +3,13 @@ extends Node
 
 var _file_write_mutex = Mutex.new()
 
-const SUPPORTED_EXTENSIONS = {"gd": true, "cs": true, "tscn": true, "scn": true, "png": true, "jpg": true, "wav": true, "ogg": true}
+const SUPPORTED_EXTENSIONS = {
+	"gd": true, "cs": true, "tscn": true, "scn": true,
+	"png": true, "jpg": true, "jpeg": true, "webp": true, "svg": true, "bmp": true,
+	"wav": true, "ogg": true, "mp3": true,
+	"tres": true, "res": true, "material": true, "import": true,
+	"json": true, "txt": true, "blend": true, "glb": true, "gltf": true
+}
 
 var network: Node
 var _is_syncing_files = false
@@ -13,6 +19,13 @@ var _http_server: TCPServer
 var _http_clients: Array = []
 var _http_buffers: Dictionary = {}
 var _http_responses: Dictionary = {}
+
+func _get_editor_interface():
+	if Engine.is_editor_hint() and Engine.has_singleton("EditorInterface"):
+		return Engine.get_singleton("EditorInterface")
+	if network and network.plugin and network.plugin.has_method("get_editor_interface"):
+		return network.plugin.get_editor_interface()
+	return null
 
 func _process(delta):
 	if _http_server and _http_server.is_listening():
@@ -155,7 +168,8 @@ func _process(delta):
 func _setup_http_server():
 	if network and network.get("is_standalone_server"):
 		_http_server = TCPServer.new()
-		var port = network.PORT + 1 if "PORT" in network else 12346
+		var base_port = network.PORT if (network and "PORT" in network) else (network.get("PORT") if network and network.get("PORT") != null else 12345)
+		var port = base_port + 1
 		var err = _http_server.listen(port)
 		if err == OK:
 			network.tc_print("HTTP File Server listening on port " + str(port))
@@ -196,13 +210,10 @@ func _is_safe_path(p: String) -> bool:
 
 	var rel_path = "res://" + target.trim_prefix(base_res)
 
-	var blocked_dirs = ["addons/team_create"]
+	var blocked_dirs = ["addons/team_create", ".team_create", ".godot"]
 	for d in blocked_dirs:
 		if rel_path == "res://" + d or rel_path.begins_with("res://" + d + "/"):
 			return false
-
-	if rel_path == "res://.godot" or (rel_path.begins_with("res://.godot/") and not rel_path.begins_with("res://.godot/imported/")):
-		return false
 
 	if rel_path == "res://project.godot":
 		return false
@@ -216,11 +227,97 @@ var _receiving_files: Dictionary = {}
 var _known_files: Array = []
 var _file_hash_cache: Dictionary = {}
 signal sync_completed
+var auto_backups_enabled = false
+signal asset_imported(path: String)
+
+func backup_scene(path: String, is_manual: bool = false) -> String:
+	if not is_manual and not auto_backups_enabled:
+		return ""
+	if not FileAccess.file_exists(path):
+		return ""
+	var base_backup_dir = "res://.team_create/backups"
+	if not DirAccess.dir_exists_absolute(base_backup_dir):
+		DirAccess.make_dir_recursive_absolute(base_backup_dir)
+	var time_str = Time.get_datetime_string_from_system().replace(":", "-")
+	var scene_name = path.get_file().get_basename()
+	var ext = path.get_extension()
+	var backup_path = base_backup_dir + "/" + scene_name + "_" + time_str + "." + ext
+	var bytes = FileAccess.get_file_as_bytes(path)
+	var f = FileAccess.open(backup_path, FileAccess.WRITE)
+	if f:
+		f.store_buffer(bytes)
+		f.close()
+		if network:
+			network.tc_print("Team Create: Backup created: ", backup_path)
+		return backup_path
+	return ""
+
+func request_asset_immediately(path: String, sender_id: int = 1):
+	if not _is_safe_path(path):
+		return
+	if FileAccess.file_exists(path) and (not FileAccess.file_exists(path + ".import") or ResourceLoader.exists(path)):
+		asset_imported.emit(path)
+		return
+
+	if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		var target_id = sender_id
+		if target_id == 0 or target_id == multiplayer.get_unique_id():
+			target_id = 1
+		rpc_id(target_id, "request_asset_package", path)
+
+@rpc("any_peer", "reliable")
+func request_asset_package(path: String):
+	if not _is_safe_path(path):
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	var asset_bytes = PackedByteArray()
+	var import_bytes = PackedByteArray()
+	if FileAccess.file_exists(path):
+		asset_bytes = FileAccess.get_file_as_bytes(path)
+	if FileAccess.file_exists(path + ".import"):
+		import_bytes = FileAccess.get_file_as_bytes(path + ".import")
+
+	if asset_bytes.size() > 0:
+		rpc_id(sender_id, "deliver_asset_package", path, asset_bytes, import_bytes)
+
+@rpc("any_peer", "reliable")
+func deliver_asset_package(path: String, asset_bytes: PackedByteArray, import_bytes: PackedByteArray):
+	if not _is_safe_path(path):
+		return
+	var dir_path = path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(dir_path):
+		DirAccess.make_dir_recursive_absolute(dir_path)
+
+	if asset_bytes.size() > 0:
+		_file_write_mutex.lock()
+		var f = FileAccess.open(path, FileAccess.WRITE)
+		if f:
+			f.store_buffer(asset_bytes)
+			f.close()
+		if import_bytes.size() > 0:
+			var fi = FileAccess.open(path + ".import", FileAccess.WRITE)
+			if fi:
+				fi.store_buffer(import_bytes)
+				fi.close()
+		_file_write_mutex.unlock()
+
+		if _file_hash_cache.has(path):
+			_file_hash_cache.erase(path)
+
+		var ei = _get_editor_interface()
+		if ei and ei.get_resource_filesystem():
+			ei.get_resource_filesystem().reimport_files(PackedStringArray([path]))
+
+		asset_imported.emit(path)
+		if network:
+			network.tc_print("Team Create: Immediately received and reimported requested asset: ", path)
+
 
 
 func _show_sync_blocker():
-	if not _sync_blocker and network and network.plugin:
-		var editor = network.plugin.get_editor_interface()
+	if not _sync_blocker:
+		var editor = _get_editor_interface()
+		if not editor: return
 		var base = editor.get_base_control()
 		_sync_blocker = ColorRect.new()
 		_sync_blocker.color = Color(0, 0, 0, 0.5)
@@ -254,8 +351,9 @@ func _ready():
 	call_deferred("_setup_fs_signals")
 
 func _setup_fs_signals():
-	if network and network.plugin:
-		var efs = network.plugin.get_editor_interface().get_resource_filesystem()
+	var ei = _get_editor_interface()
+	if ei:
+		var efs = ei.get_resource_filesystem()
 		if efs:
 			if not efs.filesystem_changed.is_connected(_on_filesystem_changed):
 				efs.filesystem_changed.connect(_on_filesystem_changed)
@@ -304,8 +402,9 @@ func _on_filesystem_changed():
 
 		if removed_any:
 			# Scan again so editor notices deleted files
-			if network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
-				network.plugin.get_editor_interface().get_resource_filesystem().scan()
+			var ei = _get_editor_interface()
+			if ei and ei.get_resource_filesystem():
+				ei.get_resource_filesystem().scan()
 
 	# Automatically sync files whenever Godot detects a local file system change.
 	sync_all_files(current_files)
@@ -360,18 +459,11 @@ func get_all_files(dir_path: String, exclude_dirs: Array = []) -> Array:
 		while file_name != "":
 			if dir.current_is_dir():
 				var sub_dir = dir_path.path_join(file_name)
-				if sub_dir == "res://.godot":
-					files.append_array(get_all_files(sub_dir, exclude_dirs))
-				elif sub_dir.begins_with("res://.godot/") and not sub_dir.begins_with("res://.godot/imported"):
-					pass # Exclude other .godot cache folders
-				elif not file_name.begins_with("."):
+				if not file_name.begins_with("."):
 					if not exclude_dirs.has(sub_dir):
 						files.append_array(get_all_files(sub_dir, exclude_dirs))
 			elif not dir.current_is_dir() and not file_name.begins_with("."):
 				var full_path = dir_path.path_join(file_name)
-				if full_path.begins_with("res://.godot/") and not full_path.begins_with("res://.godot/imported/"):
-					file_name = dir.get_next()
-					continue
 
 				# Convert local .tmp files to real assets instantly, as requested.
 				if file_name.ends_with(".tmp"):
@@ -389,8 +481,9 @@ func get_all_files(dir_path: String, exclude_dirs: Array = []) -> Array:
 					files.append(real_path)
 					network.tc_print("Converted temporary file to real asset: ", real_path)
 					# Trigger editor refresh
-					if network and network.plugin:
-						network.plugin.get_editor_interface().get_resource_filesystem().scan()
+					var ei = _get_editor_interface()
+					if ei and ei.get_resource_filesystem():
+						ei.get_resource_filesystem().scan()
 				else:
 					if full_path != "res://project.godot":
 						files.append(full_path)
@@ -428,30 +521,42 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 		local_hashes[path] = _get_cached_md5(path)
 
 	var open_scenes = []
-	if network and network.plugin:
-		open_scenes = network.plugin.get_editor_interface().get_open_scenes()
+	var ei = _get_editor_interface()
+	if ei:
+		open_scenes = ei.get_open_scenes()
 
 	# Find files to delete (only allow the server to delete files to prevent clients wiping the server)
 	if sender_id == 1:
 		for path in local_hashes:
+			if path.begins_with("res://.godot/"):
+				continue
 			if not peer_hashes.has(path):
 				if path in open_scenes:
 					network.tc_print("Skipping deletion of open scene: ", path)
 					continue
-				var err = DirAccess.remove_absolute(path)
-				if err != OK:
-					continue
+				if path.ends_with(".tscn") or path.ends_with(".scn") or path.ends_with(".gd"):
+					var trash_dir = "res://.team_create/trash"
+					if not DirAccess.dir_exists_absolute(trash_dir):
+						DirAccess.make_dir_recursive_absolute(trash_dir)
+					var trash_dest = trash_dir + "/" + path.get_file()
+					DirAccess.rename_absolute(path, trash_dest)
+					network.tc_print("Team Create: Moved unreferenced file to trash backup: ", path, " -> ", trash_dest)
+				else:
+					var err = DirAccess.remove_absolute(path)
+					if err != OK:
+						continue
+					network.tc_print("Deleted unused file: ", path)
 				if _file_hash_cache.has(path):
 					_file_hash_cache.erase(path)
-				network.tc_print("Deleted unused file: ", path)
 
 	# Request differing files
 	var files_to_request = []
 	for path in peer_hashes:
-		if path == "res://project.godot":
+		if path == "res://project.godot" or path.begins_with("res://.godot/"):
 			continue
 
-		if path.begins_with("res://.godot/imported/") and local_hashes.has(path):
+		# Server is authoritative: The server never downloads existing files over its own copy
+		if multiplayer.is_server() and local_hashes.has(path):
 			continue
 
 		if not local_hashes.has(path) or local_hashes[path] != peer_hashes[path]:
@@ -505,7 +610,8 @@ func _download_file_http(path: String):
 	var ip = network.server_ip
 	if ip == "":
 		ip = "127.0.0.1"
-	var port = network.PORT + 1 if "PORT" in network else 12346
+	var base_port = network.PORT if (network and "PORT" in network) else (network.get("PORT") if network and network.get("PORT") != null else 12345)
+	var port = base_port + 1
 
 	var raw_path = path.replace("res://", "/res/")
 	var path_parts = raw_path.split("/")
@@ -538,7 +644,8 @@ func _upload_file_http(path: String, bytes: PackedByteArray):
 	var ip = network.server_ip
 	if ip == "":
 		ip = "127.0.0.1"
-	var port = network.PORT + 1 if "PORT" in network else 12346
+	var base_port = network.PORT if (network and "PORT" in network) else (network.get("PORT") if network and network.get("PORT") != null else 12345)
+	var port = base_port + 1
 
 	var raw_path = path.replace("res://", "/res/")
 	var path_parts = raw_path.split("/")
@@ -616,12 +723,19 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 		path = real_path
 
 	# If this is a scene file, and the user has it open, we intercept writing it to disk.
-	if network and network.scene_sync and network.plugin and (path.ends_with(".tscn") or path.ends_with(".scn")):
-		var ei = network.plugin.get_editor_interface()
-		var current_scene = ei.get_edited_scene_root()
-		var open_scenes = ei.get_open_scenes()
+	if network and network.scene_sync and (path.ends_with(".tscn") or path.ends_with(".scn")):
+		var ei = _get_editor_interface()
+		var current_scene: Node = null
+		var open_scenes = []
+		if ei:
+			current_scene = ei.get_edited_scene_root()
+			open_scenes = ei.get_open_scenes()
 
 		if path in open_scenes:
+			var merge_data = {}
+			if network and network.scene_sync and not (multiplayer and multiplayer.is_server()):
+				merge_data = network.scene_sync.prepare_offline_scene_merge(path, bytes)
+
 			var is_active = current_scene and current_scene.scene_file_path == path
 			if is_active:
 				network.tc_print("Team Create: Applying received file to active scene view.")
@@ -629,6 +743,7 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 				network.tc_print("Team Create: Applying received file to open background scene.")
 
 			if bytes.size() > 0:
+				backup_scene(path)
 				_file_write_mutex.lock()
 				var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)
 				if file:
@@ -653,6 +768,8 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 				get_tree().create_timer(0.5).timeout.connect(func():
 					if is_instance_valid(network) and network.scene_sync:
 						network.scene_sync._is_reloading_scene = false
+						if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
+							network.scene_sync.apply_offline_merge_deferred(path, merge_data)
 				)
 
 			downloading_files.erase(path)
@@ -679,6 +796,10 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 				should_write = false
 
 		if should_write:
+			if path.ends_with(".tscn") or path.ends_with(".scn"):
+				backup_scene(path)
+				if network and network.scene_sync and not (multiplayer and multiplayer.is_server()):
+					network.scene_sync.prepare_offline_scene_merge(path, bytes)
 			_file_write_mutex.lock()
 			var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)
 			if file:
@@ -688,17 +809,23 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 					DirAccess.rename_absolute(path + ".tmp", path)
 				network.tc_print("Received and updated file: ", path)
 			_file_write_mutex.unlock()
+			if _file_hash_cache.has(path):
+				_file_hash_cache.erase(path)
 		else:
 			network.tc_print("File unchanged, skipped writing: ", path)
 
+		asset_imported.emit(path)
+
 		# Trigger Editor resource scan if it's an asset, debounced to prevent premature imports generating new UIDs
-		if network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
+		var ei = _get_editor_interface()
+		if ei and ei.get_resource_filesystem():
 			if _scan_timer == null:
 				_scan_timer = get_tree().create_timer(0.5)
 				_scan_timer.timeout.connect(func():
 					_scan_timer = null
-					if network and network.plugin and network.plugin.get_editor_interface().get_resource_filesystem():
-						network.plugin.get_editor_interface().get_resource_filesystem().scan()
+					var e = _get_editor_interface()
+					if e and e.get_resource_filesystem():
+						e.get_resource_filesystem().scan()
 				)
 
 	downloading_files.erase(path)

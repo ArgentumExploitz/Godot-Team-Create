@@ -31,10 +31,12 @@ class DummyEditorInterface:
 	var dummy_root = Node.new()
 	var dummy_selection = DummyEditorSelection.new()
 	var dummy_base = Control.new()
+	var dummy_main_screen = Node.new()
 
 	func _init():
 		dummy_root.name = "DummyRootScene"
 		dummy_root.set_meta("scene_file_path", "res://addons/team_create/server.tscn")
+		dummy_main_screen.name = "DummyMainScreen"
 
 	func get_editor_settings(): return settings
 	func get_resource_filesystem(): return efs
@@ -50,11 +52,10 @@ class DummyEditorInterface:
 			main_loop.quit(0)
 
 	func get_editor_main_screen():
-		var n = Node.new()
-		n.name = "DummyMainScreen"
-		return n
+		return dummy_main_screen
+	func get_editor_viewport_3d(_idx=0): return null
 	func open_scene_from_path(_path): pass # No-op in headless
-	func close_scene(): pass # No-op in headless
+	func close_scene(): return OK # No-op in headless
 	func reload_scene_from_path(_path): pass # No-op in headless
 	func save_scene(): pass # No-op in headless
 	func mark_scene_as_unsaved(): pass # No-op in headless
@@ -62,7 +63,7 @@ class DummyEditorInterface:
 class DummyEditorUndoRedoManager:
 	signal version_changed
 	signal history_changed
-	func create_action(_name, _merge_mode=0, _custom_context=null, _undo_custom_context=false): pass # No-op in headless
+	func create_action(_name, _merge_mode=0, _custom_context=null, _backward_undo_ops=false, _mark_unsaved=true): pass # No-op in headless
 	func add_do_property(_object, _property, _value): pass # No-op in headless
 	func add_undo_property(_object, _property, _value): pass # No-op in headless
 	func commit_action(_execute=true): pass # No-op in headless

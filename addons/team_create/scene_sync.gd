@@ -97,18 +97,29 @@ func _safe_load_headless(path: String) -> Dictionary:
 		temp_file.close()
 		var temp_packed = load(temp_path)
 		DirAccess.remove_absolute(temp_path)
+		if temp_packed:
+			temp_packed.take_over_path(path)
 		return {"packed": temp_packed, "is_dummy": true}
 
 	return {"packed": null, "is_dummy": false}
 
-func _get_target_scene(scene_path: String) -> Node:
-	var current_scene = null
-	if network and network.plugin:
-		current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+func _get_editor_interface():
+	if Engine.is_editor_hint() and Engine.has_singleton("EditorInterface"):
+		return Engine.get_singleton("EditorInterface")
+	if network and network.plugin and network.plugin.has_method("get_editor_interface"):
+		return network.plugin.get_editor_interface()
+	return null
 
-	if network.get("is_standalone_server"):
+func _get_edited_scene_root() -> Node:
+	var ei = _get_editor_interface()
+	if ei:
+		return ei.get_edited_scene_root()
+	return null
+
+func _get_target_scene(scene_path: String) -> Node:
+	if network and network.get("is_standalone_server"):
 		if scene_path == "":
-			return current_scene
+			return null
 
 		if _server_tracked_scenes.has(scene_path):
 			var s = _server_tracked_scenes[scene_path]
@@ -140,11 +151,10 @@ func _get_target_scene(scene_path: String) -> Node:
 			printerr("Team Create: Failed to load scene or its dependencies (cooldown applied): ", scene_path)
 		return null
 	else:
-		return current_scene
+		return _get_edited_scene_root()
 
 func _save_server_tracked_scenes():
-	return
-	if not network.get("is_standalone_server"):
+	if not network or not network.get("is_standalone_server"):
 		return
 
 	var cached_outlines = []
@@ -160,10 +170,10 @@ func _save_server_tracked_scenes():
 			# Temporarily remove outlines
 			var outlines = []
 			for node in cached_outlines:
-				if is_instance_valid(node) and node.is_ancestor_of(scene_node):
+				if is_instance_valid(node) and scene_node.is_ancestor_of(node):
 					outlines.append({"node": node, "parent": node.get_parent()})
 			for node in cached_cursors:
-				if is_instance_valid(node) and node.is_ancestor_of(scene_node):
+				if is_instance_valid(node) and scene_node.is_ancestor_of(node):
 					outlines.append({"node": node, "parent": node.get_parent()})
 
 			for data in outlines:
@@ -182,6 +192,8 @@ func _save_server_tracked_scenes():
 						if final_f:
 							final_f.store_string(t_text)
 							final_f.close()
+							if network and network.file_sync:
+								network.file_sync._file_hash_cache.erase(path)
 							if network.auto_save_prints_enabled:
 								network.tc_print("Server automatically saved tracked scene: ", path)
 					DirAccess.remove_absolute(temp_save_path)
@@ -189,6 +201,89 @@ func _save_server_tracked_scenes():
 			for data in outlines:
 				if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
 					data["parent"].add_child(data["node"])
+
+var _dirty_scenes: Dictionary = {}
+var _dirty_save_cooldown: float = 0.0
+const DIRTY_SAVE_DELAY: float = 5.0
+var _is_applying_remote_update: bool = false
+var _active_node_locks: Dictionary = {}
+
+func mark_scene_dirty(scene_path: String):
+	if scene_path == "":
+		return
+	_dirty_scenes[scene_path] = true
+	_dirty_save_cooldown = DIRTY_SAVE_DELAY
+	if not network or not network.get("is_standalone_server"):
+		var ei = _get_editor_interface()
+		if ei and ei.has_method("mark_scene_as_unsaved"):
+			ei.mark_scene_as_unsaved()
+
+func save_dirty_scenes():
+	if network and network.get("is_standalone_server"):
+		_save_server_tracked_scenes()
+		_dirty_scenes.clear()
+	else:
+		if multiplayer and multiplayer.is_server():
+			var ei = _get_editor_interface()
+			if ei and ei.has_method("save_scene"):
+				ei.save_scene()
+			_dirty_scenes.clear()
+
+func flush_all_scenes_to_disk():
+	if network and network.get("is_standalone_server"):
+		_save_server_tracked_scenes()
+		_dirty_scenes.clear()
+	else:
+		var ei = _get_editor_interface()
+		if ei and ei.has_method("save_scene"):
+			ei.save_scene()
+		_dirty_scenes.clear()
+
+@rpc("any_peer", "reliable")
+func request_node_lock(node_id: String, scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 1
+	if not (multiplayer and multiplayer.is_server()):
+		return
+	if not _active_node_locks.has(node_id) or _active_node_locks[node_id] == 0 or _active_node_locks[node_id] == sender_id:
+		_active_node_locks[node_id] = sender_id
+		rpc("grant_node_lock", node_id, sender_id, scene_path)
+		grant_node_lock(node_id, sender_id, scene_path)
+	else:
+		rpc_id(sender_id, "deny_node_lock", node_id, _active_node_locks[node_id])
+
+@rpc("any_peer", "reliable")
+func release_node_lock(node_id: String, scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 1
+	if not (multiplayer and multiplayer.is_server()):
+		return
+	if _active_node_locks.get(node_id, 0) == sender_id or sender_id == 1:
+		_active_node_locks.erase(node_id)
+		rpc("grant_node_lock", node_id, 0, scene_path)
+		grant_node_lock(node_id, 0, scene_path)
+
+@rpc("any_peer", "reliable")
+func grant_node_lock(node_id: String, holder_id: int, scene_path: String = ""):
+	if holder_id == 0:
+		_active_node_locks.erase(node_id)
+	else:
+		_active_node_locks[node_id] = holder_id
+
+@rpc("any_peer", "reliable")
+func deny_node_lock(node_id: String, holder_id: int):
+	var holder_name = "User " + str(holder_id)
+	if network and network.peers.has(holder_id):
+		holder_name = network.peers[holder_id].get("username", holder_name)
+	if network:
+		network.tc_print("Team Create: Node is currently locked by ", holder_name)
+
+func release_all_locks_for_peer(peer_id: int):
+	var to_release = []
+	for node_id in _active_node_locks:
+		if _active_node_locks[node_id] == peer_id:
+			to_release.append(node_id)
+	for node_id in to_release:
+		_active_node_locks.erase(node_id)
+		rpc("grant_node_lock", node_id, 0, "")
 
 const SYNC_INTERVAL = 0.1 # Sync 10 times a second max
 
@@ -218,15 +313,29 @@ func _ready():
 			_connect_tree_exiting_recursive(root)
 
 	call_deferred("_setup_undo_redo")
+	call_deferred("_setup_file_sync_signals")
+
+func _setup_file_sync_signals():
+	if network and network.file_sync:
+		if network.file_sync.has_signal("asset_imported") and not network.file_sync.asset_imported.is_connected(_on_asset_imported):
+			network.file_sync.asset_imported.connect(_on_asset_imported)
+
+func _on_asset_imported(path: String):
+	_process_pending_resource_properties()
 
 func _setup_undo_redo():
-	if network and network.plugin:
-		var undo_redo = network.plugin.get_undo_redo()
-		if undo_redo:
-			if not undo_redo.version_changed.is_connected(_on_undo_redo_version_changed):
-				undo_redo.version_changed.connect(_on_undo_redo_version_changed)
-			if not undo_redo.history_changed.is_connected(_on_undo_redo_version_changed):
-				undo_redo.history_changed.connect(_on_undo_redo_version_changed)
+	var undo_redo = null
+	var ei = _get_editor_interface()
+	if ei and ei.has_method("get_editor_undo_redo"):
+		undo_redo = ei.get_editor_undo_redo()
+	elif network and network.plugin and network.plugin.has_method("get_undo_redo"):
+		undo_redo = network.plugin.get_undo_redo()
+
+	if undo_redo:
+		if not undo_redo.version_changed.is_connected(_on_undo_redo_version_changed):
+			undo_redo.version_changed.connect(_on_undo_redo_version_changed)
+		if not undo_redo.history_changed.is_connected(_on_undo_redo_version_changed):
+			undo_redo.history_changed.connect(_on_undo_redo_version_changed)
 
 func _on_undo_redo_version_changed():
 	# Trigger a full check of modified nodes on the next sync interval
@@ -243,17 +352,12 @@ func _connect_tree_exiting_recursive(node: Node):
 		_connect_tree_exiting_recursive(child)
 
 func _on_node_tree_exiting(node: Node):
-	if network and network.plugin:
-		var edited_scene = network.plugin.get_editor_interface().get_edited_scene_root()
-		var current_scene = _get_target_scene("")
-		if node == edited_scene or current_scene != edited_scene:
-			return
+	var edited_scene = _get_edited_scene_root()
+	var current_scene = _get_target_scene("")
+	if edited_scene and (node == edited_scene or current_scene != edited_scene):
+		return
 
 	if multiplayer and multiplayer.has_multiplayer_peer() and not (multiplayer.get_peers() if multiplayer else []).is_empty():
-		var current_scene = null
-		if network and network.plugin:
-			current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
-
 		var scene_path = ""
 		if node.owner and node.owner.scene_file_path != "":
 			scene_path = node.owner.scene_file_path
@@ -284,6 +388,11 @@ func _process(delta):
 			_server_save_timer = 0.0
 			_save_server_tracked_scenes()
 
+	if _dirty_scenes.size() > 0:
+		_dirty_save_cooldown -= delta
+		if _dirty_save_cooldown <= 0.0:
+			save_dirty_scenes()
+
 	if not network or not network.plugin or not multiplayer or not multiplayer.has_multiplayer_peer() or multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
 		return
 
@@ -294,13 +403,16 @@ func _process(delta):
 		_track_changes_throttled()
 	_sync_cursor_throttled(delta)
 
-	# Process pending resource properties (waiting for file sync)
+	_process_pending_resource_properties()
+
+func _process_pending_resource_properties():
 	if _pending_resource_properties.is_empty():
 		return
 
 	var is_scanning = false
-	if network and network.plugin and network.plugin.get_editor_interface() and network.plugin.get_editor_interface().get_resource_filesystem():
-		is_scanning = network.plugin.get_editor_interface().get_resource_filesystem().is_scanning()
+	var ei = _get_editor_interface()
+	if ei and ei.get_resource_filesystem():
+		is_scanning = ei.get_resource_filesystem().is_scanning()
 
 	var ext_resource_regex = RegEx.new()
 	ext_resource_regex.compile("ext_resource.*path=\"(res://[^\"]+)\"")
@@ -343,6 +455,7 @@ func _process(delta):
 			if current_scene and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) == pending.scene_path:
 				var node = network.get_node_by_unique_id(current_scene, pending.id)
 				if is_instance_valid(node):
+					_is_applying_remote_update = true
 					if typeof(pending.value) == TYPE_STRING and (pending.value as String).begins_with("res://"):
 						var res = load(pending.value)
 						if res:
@@ -357,18 +470,20 @@ func _process(delta):
 						DirAccess.remove_absolute(temp_path)
 						if res is Resource:
 							var path = pending.value.get("resource_path", "")
-							if path != "":
+							if path != "" and path.begins_with("res://") and not "::" in path:
 								res.take_over_path(path)
+							else:
+								res.resource_path = ""
 							node.set(pending.prop_name, res)
+					_is_applying_remote_update = false
+					mark_scene_dirty(pending.scene_path)
 			_pending_resource_properties.remove_at(i)
 		else:
 			if Time.get_ticks_msec() > pending.timeout:
 				_pending_resource_properties.remove_at(i)
 
 func _track_changes_throttled():
-	var current_scene = null
-	if network and network.plugin:
-		current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+	var current_scene = _get_edited_scene_root()
 	if not current_scene:
 		return
 
@@ -378,15 +493,21 @@ func _track_changes_throttled():
 
 		if _last_scene_path != "":
 			rpc("request_scene_state", _last_scene_path)
+			if _pending_offline_merges.has(_last_scene_path):
+				get_tree().create_timer(0.5).timeout.connect(func():
+					apply_offline_merge_deferred(_last_scene_path)
+				)
 
 	if _force_full_sync_next_frame:
 		_force_full_sync_next_frame = false
 		_check_all_nodes(current_scene, current_scene)
 	else:
 		# ONLY track changes for selected nodes to save massive performance costs
-		var selected = network.plugin.get_editor_interface().get_selection().get_selected_nodes()
-		for node in selected:
-			_check_single_node_changes(node)
+		var ei = _get_editor_interface()
+		if ei:
+			var selected = ei.get_selection().get_selected_nodes()
+			for node in selected:
+				_check_single_node_changes(node)
 
 func _check_all_nodes(node: Node, scene_root: Node):
 	if node.owner == scene_root or node == scene_root:
@@ -395,7 +516,12 @@ func _check_all_nodes(node: Node, scene_root: Node):
 		_check_all_nodes(child, scene_root)
 
 func _check_single_node_changes(node: Node):
+	if _is_applying_remote_update:
+		return
 	var id = network.assign_unique_id(node)
+	var my_id = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+	if _active_node_locks.has(id) and _active_node_locks[id] != my_id:
+		return
 
 	var props = node.get_property_list()
 	var current_props = {}
@@ -408,7 +534,7 @@ func _check_single_node_changes(node: Node):
 			if typeof(val) == TYPE_OBJECT:
 				# For resources like Mesh or Material, sync the resource path if possible
 				if val is Resource:
-					if val.resource_path != "" and val.resource_path.begins_with("res://"):
+					if val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path:
 						# ONLY send the string path over the network
 						current_props[p.name] = val.resource_path
 					else:
@@ -438,7 +564,10 @@ func _check_single_node_changes(node: Node):
 								bytes = FileAccess.get_file_as_bytes(temp_path)
 								text = FileAccess.get_file_as_string(temp_path)
 								DirAccess.remove_absolute(temp_path)
-							current_props[p.name] = {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": val.resource_path, "resource_instance_id": val.get_instance_id()}
+							var rpath = val.resource_path
+							if rpath.begins_with("user://"):
+								rpath = ""
+							current_props[p.name] = {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": rpath, "resource_instance_id": val.get_instance_id()}
 						else:
 							current_props[p.name] = _last_tracked_properties[id][p.name]
 			else:
@@ -473,7 +602,9 @@ func _check_single_node_changes(node: Node):
 				last_props[prop_name] = current_props[prop_name]
 
 func _track_selection():
-	var editor = network.plugin.get_editor_interface()
+	var editor = _get_editor_interface()
+	if not editor:
+		return
 	var selection = editor.get_selection().get_selected_nodes()
 	var selected_ids = []
 	for node in selection:
@@ -481,11 +612,39 @@ func _track_selection():
 		selected_ids.append(id)
 
 	if selected_ids != _last_selected_ids:
+		var deselected = []
+		for id in _last_selected_ids:
+			if not selected_ids.has(id):
+				deselected.append(id)
+		for id in deselected:
+			if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+				if multiplayer.is_server():
+					release_node_lock(id, _last_scene_path)
+				else:
+					rpc_id(1, "release_node_lock", id, _last_scene_path)
+
+		for id in selected_ids:
+			if not _last_selected_ids.has(id):
+				if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+					if multiplayer.is_server():
+						request_node_lock(id, _last_scene_path)
+					else:
+						rpc_id(1, "request_node_lock", id, _last_scene_path)
+
 		_last_selected_ids = selected_ids
-		rpc("update_peer_selection", multiplayer.get_unique_id() if multiplayer else 1, selected_ids, _last_scene_path)
+		if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+			rpc("update_peer_selection", multiplayer.get_unique_id(), selected_ids, _last_scene_path)
 
 @rpc("any_peer", "reliable")
 func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if multiplayer and multiplayer.is_server() and sender_id != 0:
+		for pid in multiplayer.get_peers() if multiplayer else []:
+			if pid != sender_id:
+				rpc_id(pid, "update_peer_selection", peer_id, selected_ids, scene_path)
+
+	if network and (network.get("is_standalone_server") or DisplayServer.get_name() == "headless"):
+		return
 	var outline_group_name = _get_selection_group_name(peer_id)
 	var outline_name = _get_selection_outline_name(peer_id)
 
@@ -563,9 +722,7 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 
 func clear_peer_selections(peer_id: int):
 	var outline_group_name = _get_selection_group_name(peer_id)
-	var current_scene = null
-	if network and network.plugin:
-		current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+	var current_scene = _get_edited_scene_root()
 	if not current_scene:
 		return
 
@@ -577,8 +734,9 @@ func clear_peer_selections(peer_id: int):
 
 func push_current_scene():
 	if multiplayer and multiplayer.is_server():
-		var editor = network.plugin.get_editor_interface()
-		var current_scene = editor.get_edited_scene_root()
+		if _dirty_scenes.size() > 0:
+			save_dirty_scenes()
+		var current_scene = _get_edited_scene_root()
 		if current_scene:
 			var path = current_scene.scene_file_path
 			if path != "":
@@ -593,14 +751,17 @@ func push_current_scene():
 					rpc("receive_scene", path, randi(), bytes, true)
 
 func push_specific_scene_to_peer(scene_path: String, id: int):
-	if multiplayer and multiplayer.is_server():
-		var editor = network.plugin.get_editor_interface()
-		var current_scene = editor.get_edited_scene_root()
+	if not (multiplayer and multiplayer.is_server()):
+		return
 
-		if not network.get("is_standalone_server"):
-			if current_scene and current_scene.scene_file_path == scene_path:
-				push_current_scene_to_peer(id)
-				return
+	if _dirty_scenes.size() > 0:
+		save_dirty_scenes()
+
+	if not (network and network.get("is_standalone_server")):
+		var current_scene = _get_edited_scene_root()
+		if current_scene and current_scene.scene_file_path == scene_path:
+			push_current_scene_to_peer(id)
+			return
 
 		# This is called on the standalone server. We pack the tracked scene or read from file.
 		if _server_tracked_scenes.has(scene_path):
@@ -635,7 +796,7 @@ func push_specific_scene_to_peer(scene_path: String, id: int):
 						data["parent"].add_child(data["node"])
 				return
 
-		# Fallback to disk
+		# Fallback to disk: flush dirty scenes to disk first so peer gets freshest state
 		if FileAccess.file_exists(scene_path):
 			var bytes = FileAccess.get_file_as_bytes(scene_path)
 			_send_scene_bytes_to_peer(scene_path, bytes, id)
@@ -651,8 +812,9 @@ func _send_scene_bytes_to_peer(path: String, bytes: PackedByteArray, id: int):
 
 func push_current_scene_to_peer(id: int):
 	if multiplayer and multiplayer.is_server():
-		var editor = network.plugin.get_editor_interface()
-		var current_scene = editor.get_edited_scene_root()
+		if _dirty_scenes.size() > 0:
+			save_dirty_scenes()
+		var current_scene = _get_edited_scene_root()
 		if current_scene:
 			var path = current_scene.scene_file_path
 			if path != "":
@@ -677,7 +839,8 @@ func push_current_scene_to_peer(id: int):
 						data["parent"].add_child(data["node"])
 
 				if err == OK:
-					var temp_path = "user://temp_scene_state_" + str(multiplayer.get_unique_id() if multiplayer else 1) + ".tscn"
+					var peer_uid = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+					var temp_path = "user://temp_scene_state_" + str(peer_uid) + ".tscn"
 					if ResourceSaver.save(packed, temp_path) == OK:
 						network._restore_dummy_paths_in_file(temp_path)
 						if FileAccess.file_exists(temp_path):
@@ -692,8 +855,22 @@ func _on_node_added(node: Node):
 
 	_node_names[node.get_instance_id()] = node.name
 
-	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer or not multiplayer.has_multiplayer_peer() or (multiplayer.get_peers() if multiplayer else []).is_empty():
+	if _is_applying_remote_update or _ignore_next_structure_event or _is_reloading_scene or not multiplayer or not multiplayer.has_multiplayer_peer() or (multiplayer.get_peers() if multiplayer else []).is_empty():
 		return
+
+	# Reparenting check: if this node was removed earlier in the current frame, it was reparented!
+	var inst_id = node.get_instance_id()
+	if _pre_removal_paths.has(inst_id):
+		var pre_data = _pre_removal_paths[inst_id]
+		_pre_removal_paths.erase(inst_id)
+		var reparent_node_id = pre_data.get("id", "") if typeof(pre_data) == TYPE_DICTIONARY else str(pre_data)
+		var reparent_scene_path = pre_data.get("scene_path", "") if typeof(pre_data) == TYPE_DICTIONARY else ""
+		if reparent_node_id != "" and node.get_parent():
+			var new_parent_id = network.assign_unique_id(node.get_parent())
+			var new_index = node.get_index()
+			rpc("remote_node_reparented", reparent_node_id, new_parent_id, new_index, reparent_scene_path)
+			mark_scene_dirty(reparent_scene_path)
+			return
 
 	# Capture owner state before the frame delay.
 	# Nodes instantiated from a PackedScene (like during a scene reload or sub-scene drag-and-drop)
@@ -716,9 +893,7 @@ func _on_node_added(node: Node):
 	if node.name.begins_with("@") or node.name.begins_with("TeamCreateSelectionOutline_") or node.name.begins_with("TeamCreateCursor"):
 		return
 
-	var current_scene = null
-	if network and network.plugin:
-		current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+	var current_scene = _get_edited_scene_root()
 	if not current_scene:
 		return
 
@@ -741,11 +916,13 @@ func _on_node_added(node: Node):
 	var type = node.get_class()
 	var new_name = node.name
 	var new_id = network.assign_unique_id(node)
+	var node_scene_path = node.scene_file_path if node.scene_file_path != "" else ""
 
 	_node_names[node.get_instance_id()] = new_name
 
 	var scene_path = current_scene.scene_file_path
-	rpc("remote_node_added", parent_id, type, new_name, new_id, scene_path)
+	rpc("remote_node_added", parent_id, type, new_name, new_id, scene_path, node_scene_path)
+	mark_scene_dirty(scene_path)
 
 	# Immediately sync properties of the new node to catch duplicates
 	_sync_all_node_properties(node, new_id)
@@ -785,18 +962,24 @@ func _sync_all_node_properties(node: Node, id: String):
 			if is_different:
 				if typeof(val) == TYPE_OBJECT:
 					if val is Resource:
-						if not val.is_connected("changed", _on_resource_changed.bind(node, p.name, val)):
-							val.connect("changed", _on_resource_changed.bind(node, p.name, val))
+						if val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path:
+							current_props[p.name] = val.resource_path
+						else:
+							if not val.is_connected("changed", _on_resource_changed.bind(node, p.name, val)):
+								val.connect("changed", _on_resource_changed.bind(node, p.name, val))
 
-						var temp_path = "user://tc_sync_export_" + str(val.get_instance_id()) + ".tres"
-						ResourceSaver.save(val, temp_path)
-						var bytes = PackedByteArray()
-						var text = ""
-						if FileAccess.file_exists(temp_path):
-							bytes = FileAccess.get_file_as_bytes(temp_path)
-							text = FileAccess.get_file_as_string(temp_path)
-							DirAccess.remove_absolute(temp_path)
-						current_props[p.name] = {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": val.resource_path, "resource_instance_id": val.get_instance_id()}
+							var temp_path = "user://tc_sync_export_" + str(val.get_instance_id()) + ".tres"
+							ResourceSaver.save(val, temp_path)
+							var bytes = PackedByteArray()
+							var text = ""
+							if FileAccess.file_exists(temp_path):
+								bytes = FileAccess.get_file_as_bytes(temp_path)
+								text = FileAccess.get_file_as_string(temp_path)
+								DirAccess.remove_absolute(temp_path)
+							var rpath = val.resource_path
+							if rpath.begins_with("user://"):
+								rpath = ""
+							current_props[p.name] = {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": rpath, "resource_instance_id": val.get_instance_id()}
 				else:
 					current_props[p.name] = val
 
@@ -849,21 +1032,36 @@ func _on_node_removed(node: Node):
 	if _pre_removal_paths.has(inst_id):
 		_pre_removal_paths.erase(inst_id)
 
-	if _node_names.has(inst_id):
-		_node_names.erase(inst_id)
-
-	if id != "" and _last_tracked_properties.has(id):
-		_last_tracked_properties.erase(id)
-
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer or not multiplayer.has_multiplayer_peer() or (multiplayer.get_peers() if multiplayer else []).is_empty() or id == "":
+		if _node_names.has(inst_id):
+			_node_names.erase(inst_id)
+		if id != "" and _last_tracked_properties.has(id):
+			_last_tracked_properties.erase(id)
 		return
 
 	if id == ".":
 		return
 
-	# Delay execution slightly to check if the scene root is also being destroyed
-	# (which happens during scene reload/close)
+	# Delay execution slightly to check if the node was reparented or if scene root was closed
 	await get_tree().process_frame
+	await get_tree().process_frame
+
+	# Check if node was reparented rather than deleted
+	if is_instance_valid(node) and node.is_inside_tree():
+		var current_scene = _get_edited_scene_root()
+		var new_parent = node.get_parent()
+		if new_parent and current_scene and (node.owner == current_scene or node == current_scene or new_parent == current_scene or new_parent.owner == current_scene):
+			var new_parent_id = network.assign_unique_id(new_parent)
+			var new_index = node.get_index()
+			_node_names[inst_id] = node.name
+			rpc("remote_node_reparented", id, new_parent_id, new_index, scene_path)
+			mark_scene_dirty(scene_path)
+			return
+
+	if _node_names.has(inst_id):
+		_node_names.erase(inst_id)
+	if id != "" and _last_tracked_properties.has(id):
+		_last_tracked_properties.erase(id)
 
 	# If the root node that owned this node is no longer valid, the entire scene was closed or reloaded.
 	# We should NOT broadcast individual node removals for a destroyed scene.
@@ -871,17 +1069,17 @@ func _on_node_removed(node: Node):
 		return
 
 	# Prevent sending removal if the user is just closing/switching scenes.
-	if network and network.plugin:
-		var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
-		if current_scene:
-			var active_scene_path = current_scene.scene_file_path
-			if scene_path != "" and active_scene_path != scene_path:
-				return
-		else:
-			# If current_scene is null, they are closing the last scene tab.
+	var current_scene = _get_edited_scene_root()
+	if current_scene:
+		var active_scene_path = current_scene.scene_file_path
+		if scene_path != "" and active_scene_path != scene_path:
 			return
+	else:
+		# If current_scene is null, they are closing the last scene tab.
+		return
 
 	rpc("remote_node_removed", id, scene_path)
+	mark_scene_dirty(scene_path)
 
 func _on_node_renamed(node: Node):
 	if _ignore_next_structure_event or _is_reloading_scene or not multiplayer or not multiplayer.has_multiplayer_peer() or (multiplayer.get_peers() if multiplayer else []).is_empty():
@@ -897,13 +1095,52 @@ func _on_node_renamed(node: Node):
 			_node_names[inst_id] = new_name
 			var parent_id = network.assign_unique_id(parent)
 			var scene_path = ""
-			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+			var current_scene = _get_edited_scene_root()
 			if current_scene:
 				scene_path = current_scene.scene_file_path
 			rpc("remote_node_renamed_exact", parent_id, old_name, new_name, scene_path)
+			mark_scene_dirty(scene_path)
 
 @rpc("any_peer", "reliable")
-func remote_node_added(parent_id: String, type: String, new_name: String, new_id: String, scene_path: String = ""):
+func remote_node_reparented(id: String, new_parent_id: String, new_index: int, scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if multiplayer and multiplayer.is_server() and sender_id != 0:
+		for peer_id in multiplayer.get_peers() if multiplayer else []:
+			if peer_id != sender_id:
+				rpc_id(peer_id, "remote_node_reparented", id, new_parent_id, new_index, scene_path)
+
+	_is_applying_remote_update = true
+	_ignore_next_structure_event = true
+	var current_scene = _get_target_scene(scene_path)
+	if current_scene:
+		if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
+			_ignore_next_structure_event = false
+			_is_applying_remote_update = false
+			return
+		var node = network.get_node_by_unique_id(current_scene, id)
+		var new_parent = network.get_node_by_unique_id(current_scene, new_parent_id)
+		if is_instance_valid(node) and is_instance_valid(new_parent) and node != current_scene:
+			if node.get_parent() != new_parent:
+				node.reparent(new_parent, false)
+			if new_index >= 0 and new_index < new_parent.get_child_count():
+				new_parent.move_child(node, new_index)
+			if new_parent.owner and new_parent.owner != current_scene and new_parent.scene_file_path == "":
+				node.owner = new_parent.owner
+			else:
+				node.owner = current_scene
+			_node_names[node.get_instance_id()] = node.name
+			mark_scene_dirty(scene_path)
+	_ignore_next_structure_event = false
+	_is_applying_remote_update = false
+
+@rpc("any_peer", "reliable")
+func remote_node_added(parent_id: String, type: String, new_name: String, new_id: String, scene_path: String = "", node_scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if multiplayer and multiplayer.is_server() and sender_id != 0:
+		for peer_id in multiplayer.get_peers() if multiplayer else []:
+			if peer_id != sender_id:
+				rpc_id(peer_id, "remote_node_added", parent_id, type, new_name, new_id, scene_path, node_scene_path)
+
 	_ignore_next_structure_event = true
 	var current_scene = _get_target_scene(scene_path)
 	if current_scene:
@@ -915,7 +1152,13 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 			# Prevent duplicates. If the exact node name already exists under the parent,
 			# DO NOT instantiate a new one. This fundamentally prevents exponential rejoin floods.
 			if not parent.has_node(new_name):
-				var new_node = ClassDB.instantiate(type) as Node
+				var new_node: Node = null
+				if node_scene_path != "" and ResourceLoader.exists(node_scene_path):
+					var packed = load(node_scene_path)
+					if packed and packed is PackedScene:
+						new_node = packed.instantiate()
+				if not new_node and ClassDB.can_instantiate(type):
+					new_node = ClassDB.instantiate(type) as Node
 				if new_node:
 					new_node.name = new_name
 					parent.add_child(new_node)
@@ -924,10 +1167,17 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 					else:
 						new_node.owner = current_scene
 					_node_names[new_node.get_instance_id()] = new_name
+					mark_scene_dirty(scene_path)
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
 func remote_node_removed(id: String, scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if multiplayer and multiplayer.is_server() and sender_id != 0:
+		for peer_id in multiplayer.get_peers() if multiplayer else []:
+			if peer_id != sender_id:
+				rpc_id(peer_id, "remote_node_removed", id, scene_path)
+
 	_ignore_next_structure_event = true
 	var current_scene = _get_target_scene(scene_path)
 	if current_scene:
@@ -941,6 +1191,7 @@ func remote_node_removed(id: String, scene_path: String = ""):
 			if is_instance_valid(parent):
 				parent.remove_child(node)
 			node.queue_free()
+			mark_scene_dirty(scene_path)
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
@@ -950,6 +1201,12 @@ func remote_node_renamed(new_id: String, new_name: String):
 
 @rpc("any_peer", "reliable")
 func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: String, scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if multiplayer and multiplayer.is_server() and sender_id != 0:
+		for peer_id in multiplayer.get_peers() if multiplayer else []:
+			if peer_id != sender_id:
+				rpc_id(peer_id, "remote_node_renamed_exact", parent_id, old_name, new_name, scene_path)
+
 	_ignore_next_structure_event = true
 	var current_scene = _get_target_scene(scene_path)
 	if current_scene:
@@ -962,6 +1219,7 @@ func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: St
 			if node:
 				node.name = new_name
 				_node_names[node.get_instance_id()] = new_name
+				mark_scene_dirty(scene_path)
 	_ignore_next_structure_event = false
 
 func _send_update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
@@ -1027,17 +1285,20 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 			return
 		var node = network.get_node_by_unique_id(current_scene, id)
 		if node:
+			_is_applying_remote_update = true
 			if typeof(value) == TYPE_STRING and (value as String).begins_with("res://"):
 				# Validate path to prevent directory traversal
 				if ".." in (value as String):
 					printerr("Team Create: Invalid resource path received: ", value)
+					_is_applying_remote_update = false
 					return
 
 				# It's a resource path
 				var is_downloading = network and network.file_sync and value in network.file_sync.downloading_files
 				var is_scanning = false
-				if network and network.plugin and network.plugin.get_editor_interface() and network.plugin.get_editor_interface().get_resource_filesystem():
-					is_scanning = network.plugin.get_editor_interface().get_resource_filesystem().is_scanning()
+				var ei = _get_editor_interface()
+				if ei and ei.get_resource_filesystem():
+					is_scanning = ei.get_resource_filesystem().is_scanning()
 
 				var res = null
 				var safe_exists = _safe_resource_exists(value)
@@ -1048,17 +1309,20 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 					node.set(prop_name, res)
 				elif network.get("is_standalone_server"):
 					# Standalone server cannot load imported resources. Create a dummy.
-					var dummy_path = network._get_or_create_dummy_resource(value, "Resource") # Default to Resource, Godot will accept it in scripts, but might drop for typed props.
+					var dummy_path = network._get_or_create_dummy_resource(value, "Resource")
 					var dummy_res = load(dummy_path)
 					if dummy_res:
 						node.set(prop_name, dummy_res)
 				else:
-					# Push to pending queue waiting for file sync to complete
-					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "timeout": Time.get_ticks_msec() + 15000})
+					# Request immediately from peer and queue for import completion
+					if network and network.file_sync:
+						network.file_sync.request_asset_immediately(value, sender_id)
+					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "sender_id": sender_id, "timeout": Time.get_ticks_msec() + 30000})
 			elif typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes"):
 				var is_scanning = false
-				if network and network.plugin and network.plugin.get_editor_interface() and network.plugin.get_editor_interface().get_resource_filesystem():
-					is_scanning = network.plugin.get_editor_interface().get_resource_filesystem().is_scanning()
+				var ei = _get_editor_interface()
+				if ei and ei.get_resource_filesystem():
+					is_scanning = ei.get_resource_filesystem().is_scanning()
 
 				var is_ready = true
 				if is_scanning:
@@ -1075,6 +1339,8 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 								break
 							if not _safe_resource_exists(ext_path):
 								is_ready = false
+								if network and network.file_sync:
+									network.file_sync.request_asset_immediately(ext_path, sender_id)
 								break
 
 				if is_ready:
@@ -1087,25 +1353,280 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 					DirAccess.remove_absolute(temp_path)
 					if res is Resource:
 						var path = value.get("resource_path", "")
-						if path != "":
+						if path != "" and path.begins_with("res://") and not "::" in path:
 							res.take_over_path(path)
+						else:
+							res.resource_path = ""
 
 						node.set(prop_name, res)
 				else:
-					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "timeout": Time.get_ticks_msec() + 15000})
+					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "sender_id": sender_id, "timeout": Time.get_ticks_msec() + 30000})
 			elif prop_name == "__connections__":
 				_apply_connections(node, value, current_scene)
 			else:
 				node.set(prop_name, value)
 
+			_is_applying_remote_update = false
+			mark_scene_dirty(scene_path)
+
 			if not _last_tracked_properties.has(id):
 				_last_tracked_properties[id] = {}
 			_last_tracked_properties[id][prop_name] = value
 
+# ==============================================================================
+# Automatic Semantic Offline Scene Merge
+# ==============================================================================
+
+var _pending_offline_merges = {}
+
+func prepare_offline_scene_merge(path: String, incoming_server_bytes: PackedByteArray) -> Dictionary:
+	if multiplayer and multiplayer.is_server():
+		return {}
+	if network and network.get("is_standalone_server"):
+		return {}
+	if incoming_server_bytes.is_empty():
+		return {}
+	if path == "" or not (path.ends_with(".tscn") or path.ends_with(".scn")):
+		return {}
+
+	# If the file exists locally and content is identical, no merge needed
+	if FileAccess.file_exists(path):
+		var existing_bytes = FileAccess.get_file_as_bytes(path)
+		if existing_bytes == incoming_server_bytes:
+			return {}
+	else:
+		return {}
+
+	# 1. Obtain local scene root
+	var ei = _get_editor_interface()
+	var local_root: Node = null
+	var is_temp_local = false
+	if ei:
+		var active_scene = ei.get_edited_scene_root()
+		if active_scene and (active_scene.scene_file_path == path or active_scene.get_meta("scene_file_path", "") == path):
+			local_root = active_scene
+
+	if not local_root and FileAccess.file_exists(path):
+		var local_packed = load(path)
+		if local_packed and local_packed is PackedScene:
+			local_root = local_packed.instantiate()
+			is_temp_local = true
+
+	if not is_instance_valid(local_root):
+		return {}
+
+	# 2. Instantiate incoming server scene from buffer
+	var temp_server_path = "user://tc_merge_temp_" + str(randi()) + ".tscn"
+	var f = FileAccess.open(temp_server_path, FileAccess.WRITE)
+	if not f:
+		if is_temp_local and is_instance_valid(local_root):
+			local_root.free()
+		return {}
+	f.store_buffer(incoming_server_bytes)
+	f.close()
+
+	var server_packed = load(temp_server_path)
+	DirAccess.remove_absolute(temp_server_path)
+	if not server_packed or not (server_packed is PackedScene):
+		if is_temp_local and is_instance_valid(local_root):
+			local_root.free()
+		return {}
+
+	var server_root = server_packed.instantiate()
+	if not is_instance_valid(server_root):
+		if is_temp_local and is_instance_valid(local_root):
+			local_root.free()
+		return {}
+
+	# 3. Collect all paths and UUIDs from server scene
+	var server_paths = {}
+	var server_uuids = {}
+	_collect_node_paths_and_uuids(server_root, server_root, server_paths, server_uuids)
+
+	# 4. Find all nodes in local scene that do not exist on server
+	var added_nodes = []
+	_find_offline_added_nodes(local_root, local_root, server_paths, server_uuids, added_nodes, path)
+
+	# Cleanup temporary server and local instances
+	if is_instance_valid(server_root):
+		server_root.free()
+	if is_temp_local and is_instance_valid(local_root):
+		local_root.free()
+
+	if added_nodes.is_empty():
+		return {}
+
+	var merge_data = {
+		"scene_path": path,
+		"added_nodes": added_nodes
+	}
+	_pending_offline_merges[path] = merge_data
+	network.tc_print("Team Create: Detected ", str(added_nodes.size()), " offline additions to merge for ", path)
+	return merge_data
+
+func _collect_node_paths_and_uuids(root: Node, node: Node, paths: Dictionary, uuids: Dictionary):
+	if not is_instance_valid(node):
+		return
+	var rel_path = "." if node == root else str(root.get_path_to(node))
+	paths[rel_path] = true
+	if node.has_meta("_tc_uuid"):
+		uuids[str(node.get_meta("_tc_uuid"))] = true
+	for child in node.get_children():
+		_collect_node_paths_and_uuids(root, child, paths, uuids)
+
+func _find_offline_added_nodes(local_root: Node, node: Node, server_paths: Dictionary, server_uuids: Dictionary, added_nodes: Array, scene_path: String):
+	if not is_instance_valid(node):
+		return
+	for child in node.get_children():
+		if not is_instance_valid(child):
+			continue
+		if child.is_in_group("TeamCreateSelectionOutlines") or child.is_in_group("TeamCreateCursors"):
+			continue
+		if child.name.begins_with("TeamCreateSelectionOutline") or child.name.begins_with("TeamCreateCursor"):
+			continue
+
+		var rel_path = str(local_root.get_path_to(child))
+		var uuid = str(child.get_meta("_tc_uuid")) if child.has_meta("_tc_uuid") else ""
+		var exists_on_server = server_paths.has(rel_path) or (uuid != "" and server_uuids.has(uuid))
+
+		if not exists_on_server:
+			var parent = child.get_parent()
+			var parent_id = "." if parent == local_root else str(local_root.get_path_to(parent))
+			var node_type = child.get_class()
+			var node_name = child.name
+			var new_id = network.assign_unique_id(child)
+			var node_scene_path = child.scene_file_path if child.scene_file_path != "" else ""
+			var props = _extract_node_properties_for_merge(child)
+
+			added_nodes.append({
+				"parent_id": parent_id,
+				"type": node_type,
+				"name": node_name,
+				"id": new_id,
+				"uuid": uuid,
+				"scene_path": scene_path,
+				"node_scene_path": node_scene_path,
+				"properties": props
+			})
+
+			# Instantiated sub-scenes load their internal children automatically
+			if node_scene_path != "":
+				continue
+
+		_find_offline_added_nodes(local_root, child, server_paths, server_uuids, added_nodes, scene_path)
+
+func _extract_node_properties_for_merge(node: Node) -> Dictionary:
+	var type = node.get_class()
+	if not ClassDB.can_instantiate(type):
+		return {}
+
+	var default_node = ClassDB.instantiate(type)
+	if not default_node:
+		return {}
+
+	var props = node.get_property_list()
+	var current_props = {}
+
+	for p in props:
+		if p.usage & PROPERTY_USAGE_EDITOR or p.name == "transform" or p.name == "name":
+			if p.name.begins_with("metadata/"):
+				continue
+
+			var val = node.get(p.name)
+			var default_val = default_node.get(p.name)
+
+			var is_different = false
+			if typeof(val) != typeof(default_val):
+				is_different = true
+			elif typeof(val) == TYPE_OBJECT:
+				if val != default_val and val != null:
+					is_different = true
+			else:
+				if val != default_val:
+					is_different = true
+
+			if is_different:
+				if typeof(val) == TYPE_OBJECT:
+					if val is Resource:
+						if val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path:
+							current_props[p.name] = val.resource_path
+						else:
+							var temp_path = "user://tc_sync_export_" + str(val.get_instance_id()) + ".tres"
+							ResourceSaver.save(val, temp_path)
+							var bytes = PackedByteArray()
+							var text = ""
+							if FileAccess.file_exists(temp_path):
+								bytes = FileAccess.get_file_as_bytes(temp_path)
+								text = FileAccess.get_file_as_string(temp_path)
+								DirAccess.remove_absolute(temp_path)
+							var rpath = val.resource_path
+							if rpath.begins_with("user://"):
+								rpath = ""
+							current_props[p.name] = {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": rpath, "resource_instance_id": val.get_instance_id()}
+				else:
+					current_props[p.name] = val
+
+	default_node.free()
+	return current_props
+
+func apply_offline_merge_deferred(path: String, merge_data: Dictionary = {}):
+	if merge_data.is_empty():
+		if _pending_offline_merges.has(path):
+			merge_data = _pending_offline_merges[path]
+		else:
+			return
+
+	if merge_data.is_empty() or not merge_data.has("added_nodes"):
+		return
+	var added = merge_data["added_nodes"]
+	if added.is_empty():
+		return
+
+	if not multiplayer or not multiplayer.has_multiplayer_peer() or multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return
+
+	network.tc_print("Team Create: Applying ", str(added.size()), " offline additions for ", path)
+
+	for item in added:
+		var parent_id = item["parent_id"]
+		var type = item["type"]
+		var new_name = item["name"]
+		var new_id = item["id"]
+		var scene_path = item["scene_path"]
+		var node_scene_path = item["node_scene_path"]
+		var props = item["properties"]
+		var uuid = item.get("uuid", "")
+
+		# 1. Instantiate locally
+		remote_node_added(parent_id, type, new_name, new_id, scene_path, node_scene_path)
+		if uuid != "":
+			var current_scene = _get_target_scene(scene_path)
+			if current_scene:
+				var created_node = network.get_node_by_unique_id(current_scene, new_id)
+				if is_instance_valid(created_node):
+					created_node.set_meta("_tc_uuid", uuid)
+
+		# 2. Broadcast to server & peers
+		rpc("remote_node_added", parent_id, type, new_name, new_id, scene_path, node_scene_path)
+
+		# 3. Apply and broadcast properties
+		if not _last_tracked_properties.has(new_id):
+			_last_tracked_properties[new_id] = {}
+
+		for prop_name in props:
+			var val = props[prop_name]
+			update_node_property(new_id, prop_name, val, scene_path)
+			_send_update_node_property(new_id, prop_name, val, scene_path)
+			_last_tracked_properties[new_id][prop_name] = val
+
+		mark_scene_dirty(scene_path)
+
+	_pending_offline_merges.erase(path)
+
 @rpc("any_peer", "reliable")
 func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_final: bool = true):
 	# Validate path to prevent directory traversal
-	if path.begins_with("res://addons/team_create") or (path.begins_with("res://.godot") and not path.begins_with("res://.godot/imported/")):
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot"):
 		printerr("Team Create: Unauthorized scene access: ", path)
 		return
 	if not path.begins_with("res://") or ".." in path:
@@ -1157,17 +1678,21 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 					get_tree().root.add_child(instance)
 			return
 		else:
-			var editor = network.plugin.get_editor_interface()
-			var current_scene = editor.get_edited_scene_root()
-			var open_scenes = editor.get_open_scenes()
+			var editor = _get_editor_interface()
+			var current_scene = editor.get_edited_scene_root() if editor else null
+			var open_scenes = editor.get_open_scenes() if editor else PackedStringArray()
 
 			var is_active = false
 			if current_scene and current_scene.scene_file_path == path:
 				is_active = true
 
-			if is_active:
+			if is_active and editor:
+				var merge_data = prepare_offline_scene_merge(path, bytes)
+
 				# 1. Write to disk and force reload
 				if bytes.size() > 0:
+					if network and network.file_sync:
+						network.file_sync.backup_scene(path)
 					_file_write_mutex.lock()
 					var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)
 					if file:
@@ -1184,21 +1709,38 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 
 				get_tree().create_timer(0.5).timeout.connect(func():
 					_is_reloading_scene = false
+					if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
+						apply_offline_merge_deferred(path, merge_data)
 				)
 				return
-			elif path in open_scenes:
-				# 2. Scene is open in tabs but not active ("closed" in the context of currently viewing)
-				# Switch to the tab, close it, and switch back
-				var prev_path = current_scene.scene_file_path if current_scene else ""
-				editor.open_scene_from_path(path)
-				editor.close_scene()
+			elif path in open_scenes and editor:
+				var merge_data = prepare_offline_scene_merge(path, bytes)
 
+				# 2. Scene is open in tabs but not active. Write to disk and cleanly reload without closing tab.
+				if bytes.size() > 0:
+					if network and network.file_sync:
+						network.file_sync.backup_scene(path)
+					_file_write_mutex.lock()
+					var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)
+					if file:
+						file.store_buffer(bytes)
+						file.close()
+						if DirAccess.remove_absolute(path) == OK or not FileAccess.file_exists(path):
+							DirAccess.rename_absolute(path + ".tmp", path)
+					_file_write_mutex.unlock()
+
+				editor.reload_scene_from_path(path)
+				var prev_path = current_scene.scene_file_path if current_scene else ""
 				if prev_path != "":
 					editor.open_scene_from_path(prev_path)
 
-				network.tc_print("Team Create: Closed updated background scene tab: ", path)
+				network.tc_print("Team Create: Safely reloaded background scene tab: ", path)
+				return
 
 	if bytes.size() > 0:
+		var merge_data = prepare_offline_scene_merge(path, bytes)
+		if network and network.file_sync:
+			network.file_sync.backup_scene(path)
 		_file_write_mutex.lock()
 		var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)
 		if file:
@@ -1242,7 +1784,8 @@ func request_scene_state(scene_path: String):
 				data["parent"].add_child(data["node"])
 
 		if err == OK:
-			var temp_path = "user://temp_scene_state_" + str(multiplayer.get_unique_id() if multiplayer else 1) + ".tscn"
+			var peer_uid = multiplayer.get_unique_id() if (is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer()) else 1
+			var temp_path = "user://temp_scene_state_" + str(peer_uid) + ".tscn"
 			if ResourceSaver.save(packed, temp_path) == OK:
 				network._restore_dummy_paths_in_file(temp_path)
 				if FileAccess.file_exists(temp_path):
@@ -1259,7 +1802,7 @@ func request_scene_state(scene_path: String):
 
 @rpc("any_peer", "reliable")
 func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray, is_final: bool = true):
-	if path.begins_with("res://addons/team_create") or (path.begins_with("res://.godot") and not path.begins_with("res://.godot/imported/")):
+	if path.begins_with("res://addons/team_create") or path.begins_with("res://.godot"):
 		printerr("Team Create: Unauthorized scene state access: ", path)
 		return
 	if not path.begins_with("res://") or ".." in path:
@@ -1281,6 +1824,8 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 	bytes = full_bytes
 
 	if bytes.size() > 0:
+		var merge_data = prepare_offline_scene_merge(path, bytes)
+
 		_file_write_mutex.lock()
 		var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)
 		if file:
@@ -1313,14 +1858,17 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 							_server_dummy_scenes.erase(path)
 						get_tree().root.add_child(instance)
 			else:
-				var editor = network.plugin.get_editor_interface()
-				var current_scene = editor.get_edited_scene_root()
-				if current_scene and current_scene.scene_file_path == path:
-					_is_reloading_scene = true
-					editor.reload_scene_from_path(path)
-					get_tree().create_timer(0.5).timeout.connect(func():
-						_is_reloading_scene = false
-					)
+				var editor = _get_editor_interface()
+				if editor:
+					var current_scene = editor.get_edited_scene_root()
+					if current_scene and current_scene.scene_file_path == path:
+						_is_reloading_scene = true
+						editor.reload_scene_from_path(path)
+						get_tree().create_timer(0.5).timeout.connect(func():
+							_is_reloading_scene = false
+							if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
+								apply_offline_merge_deferred(path, merge_data)
+						)
 
 
 
@@ -1363,23 +1911,36 @@ var _peer_cursors_2d = {}
 
 
 func _sync_cursor_throttled(delta):
+	if DisplayServer.get_name() == "headless" or (network and network.get("is_standalone_server")):
+		return
 	_last_cursor_sync += delta
 	if _last_cursor_sync >= CURSOR_SYNC_INTERVAL:
 		_last_cursor_sync = 0.0
 		if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 			var data = _get_local_cursor_data()
-			if data.has_3d:
-				if data.pos_3d != _local_3d_cursor_pos:
-					_local_3d_cursor_pos = data.pos_3d
+			if typeof(data) == TYPE_DICTIONARY and data.get("has_3d", false):
+				var pos_3d = data.get("pos_3d", Transform3D())
+				if pos_3d != _local_3d_cursor_pos:
+					_local_3d_cursor_pos = pos_3d
 					rpc("update_peer_cursor_3d", multiplayer.get_unique_id() if multiplayer else 1, _local_3d_cursor_pos, _last_scene_path)
-			elif data.has_2d:
-				if data.pos_2d != _local_2d_cursor_pos:
-					_local_2d_cursor_pos = data.pos_2d
+			elif typeof(data) == TYPE_DICTIONARY and data.get("has_2d", false):
+				var pos_2d = data.get("pos_2d", Vector2.ZERO)
+				if pos_2d != _local_2d_cursor_pos:
+					_local_2d_cursor_pos = pos_2d
 					rpc("update_peer_cursor_2d", multiplayer.get_unique_id() if multiplayer else 1, _local_2d_cursor_pos, _last_scene_path)
 
 
 @rpc("any_peer", "unreliable")
 func update_peer_cursor_3d(peer_id: int, pos: Transform3D, scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if multiplayer and multiplayer.is_server() and sender_id != 0:
+		for pid in multiplayer.get_peers() if multiplayer else []:
+			if pid != sender_id:
+				rpc_id(pid, "update_peer_cursor_3d", peer_id, pos, scene_path)
+
+	if network and (network.get("is_standalone_server") or DisplayServer.get_name() == "headless"):
+		return
+
 	var current_scene = _get_target_scene(scene_path)
 	if not current_scene or (scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path):
 		_clear_peer_cursor(peer_id)
@@ -1396,6 +1957,15 @@ func update_peer_cursor_3d(peer_id: int, pos: Transform3D, scene_path: String = 
 
 @rpc("any_peer", "unreliable")
 func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if multiplayer and multiplayer.is_server() and sender_id != 0:
+		for pid in multiplayer.get_peers() if multiplayer else []:
+			if pid != sender_id:
+				rpc_id(pid, "update_peer_cursor_2d", peer_id, pos, scene_path)
+
+	if network and (network.get("is_standalone_server") or DisplayServer.get_name() == "headless"):
+		return
+
 	var current_scene = _get_target_scene(scene_path)
 	if not current_scene or (scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path):
 		_clear_peer_cursor(peer_id)
@@ -1408,9 +1978,6 @@ func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
 
 	var cursor = _get_or_create_peer_cursor_2d(peer_id, current_scene)
 	if cursor:
-		# Assuming pos is local to the canvas. In Godot 4 Editor, `event.position` from `_forward_canvas_gui_input` is
-		# actually in canvas coordinates? Wait, it's typically canvas coordinates if you handle it correctly.
-		# Let's set it to global_position of a Node2D
 		cursor.position = pos
 
 # TODO: Implement cursor object pooling instead of repeatedly instantiating/freeing cursor meshes
@@ -1525,7 +2092,7 @@ func _get_or_create_peer_cursor_2d(peer_id: int, current_scene: Node) -> Node2D:
 	return cursor
 
 func _clear_peer_cursor(peer_id: int):
-	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+	var current_scene = _get_edited_scene_root()
 	if not current_scene: return
 	_clear_peer_cursor_3d(peer_id, current_scene)
 	_clear_peer_cursor_2d(peer_id, current_scene)
@@ -1543,8 +2110,7 @@ func _clear_peer_cursor_2d(peer_id: int, current_scene: Node):
 func clear_all_peer_indicators():
 	_peer_cursors_3d.clear()
 	_peer_cursors_2d.clear()
-	var editor = network.plugin.get_editor_interface()
-	var current_scene = editor.get_edited_scene_root()
+	var current_scene = _get_edited_scene_root()
 	if not current_scene:
 		return
 
@@ -1558,7 +2124,7 @@ func clear_all_peer_indicators():
 				node.queue_free()
 
 func _update_cursor_username(peer_id: int, username: String):
-	var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+	var current_scene = _get_edited_scene_root()
 	if not current_scene: return
 	var tree = current_scene.get_tree()
 	if not tree: return
@@ -1593,34 +2159,35 @@ var _cached_3d_camera: Camera3D = null
 
 func _get_local_cursor_data() -> Dictionary:
 	var result = {"has_3d": false, "pos_3d": Transform3D(), "has_2d": false, "pos_2d": Vector2.ZERO}
-	var main_screen = network.plugin.get_editor_interface().get_editor_main_screen()
+	if DisplayServer.get_name() == "headless" or (network and network.get("is_standalone_server")):
+		return result
+	var ei = _get_editor_interface()
+	if not ei or not ei.has_method("get_editor_main_screen"): return result
+
+	var main_screen = ei.get_editor_main_screen()
 	if not is_instance_valid(main_screen) or not main_screen.is_inside_tree(): return result
 
+	# 3D Editor Viewport
 	if not is_instance_valid(_cached_3d_viewport):
 		_cached_3d_viewport = _find_editor_viewport(main_screen, "Node3DEditorViewport")
+	if is_instance_valid(_cached_3d_viewport) and _cached_3d_viewport is CanvasItem and _cached_3d_viewport.is_visible_in_tree():
+		if not is_instance_valid(_cached_3d_camera):
+			_cached_3d_camera = _find_editor_camera_3d(_cached_3d_viewport)
+		var cam = _cached_3d_camera
+		if is_instance_valid(cam):
+			result["has_3d"] = true
+			result["pos_3d"] = cam.global_transform
+
+	# 2D Editor Viewport
 	if not is_instance_valid(_cached_2d_viewport):
 		_cached_2d_viewport = _find_editor_viewport(main_screen, "CanvasItemEditorViewport")
 
-	# Try 3D
-	if is_instance_valid(_cached_3d_viewport) and _cached_3d_viewport.is_visible_in_tree():
-		if not is_instance_valid(_cached_3d_camera):
-			_cached_3d_camera = _find_editor_camera_3d(_cached_3d_viewport)
-
-		var cam = _cached_3d_camera
-		if is_instance_valid(cam):
-			var viewport = cam.get_viewport()
-			if viewport:
-				# Use the camera's global transform for the 3D cursor
-				result.has_3d = true
-				result.pos_3d = cam.global_transform
-
-	# Try 2D
-	if is_instance_valid(_cached_2d_viewport) and _cached_2d_viewport.is_visible_in_tree():
+	if is_instance_valid(_cached_2d_viewport) and _cached_2d_viewport is CanvasItem and _cached_2d_viewport.is_visible_in_tree():
 		var mouse_pos = _cached_2d_viewport.get_local_mouse_position()
 		var rect = Rect2(Vector2.ZERO, _cached_2d_viewport.size)
 		if rect.has_point(mouse_pos):
 			result.has_2d = true
-			var current_scene = network.plugin.get_editor_interface().get_edited_scene_root()
+			var current_scene = _get_edited_scene_root()
 			if current_scene and current_scene is Node2D:
 				result.pos_2d = current_scene.get_global_transform_with_canvas().affine_inverse() * mouse_pos
 			elif current_scene and current_scene is Control:

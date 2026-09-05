@@ -39,18 +39,34 @@ func _enter_tree() -> void:
 
 	network.tc_print("Team Create initialized.")
 
+	if has_signal("scene_saved"):
+		if not scene_saved.is_connected(_on_scene_saved):
+			scene_saved.connect(_on_scene_saved)
+
 	# Check for updates on load
 	check_for_updates()
 
 func _exit_tree() -> void:
+	if has_signal("scene_saved") and scene_saved.is_connected(_on_scene_saved):
+		scene_saved.disconnect(_on_scene_saved)
+
 	if dock:
 		remove_control_from_docks(dock)
+		dock.queue_free()
+		dock = null
+	if chat_dock:
 		remove_control_from_bottom_panel(chat_dock)
 		chat_dock.queue_free()
-		dock.queue_free()
+		chat_dock = null
 	if network:
-		get_tree().root.remove_child(network)
+		if network.get_parent():
+			network.get_parent().remove_child(network)
 		network.queue_free()
+		network = null
+
+func _on_scene_saved(filepath: String) -> void:
+	if network and network.has_method("on_local_scene_saved"):
+		network.on_local_scene_saved(filepath)
 
 func get_current_version() -> String:
 	var cfg = ConfigFile.new()
@@ -204,6 +220,16 @@ func _extract_and_apply_update(zip_path: String) -> void:
 
 func _force_close_all_scenes() -> void:
 	var editor = get_editor_interface()
+	if not editor:
+		return
+
+	if editor.has_method("get_open_scenes") and editor.has_method("close_scene"):
+		var open_scenes = editor.get_open_scenes()
+		for _i in range(open_scenes.size() + 2):
+			if editor.close_scene() != OK:
+				break
+		return
+
 	var base_control = editor.get_base_control()
 	var scene_tabs: TabBar = null
 

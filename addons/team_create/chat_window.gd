@@ -9,17 +9,29 @@ class DropTarget extends MarginContainer:
 	func _can_drop_data(at_position: Vector2, data: Variant) -> bool:
 		if typeof(data) == TYPE_DICTIONARY and data.has("type") and data["type"] == "files":
 			for f in data["files"]:
-				var ext = f.get_extension().to_lower()
+				var ext = str(f).get_extension().to_lower()
 				if ext in ["png", "jpg", "jpeg", "webp", "svg", "bmp"]:
 					return true
+		elif typeof(data) == TYPE_ARRAY or typeof(data) == TYPE_PACKED_STRING_ARRAY:
+			for f in data:
+				if typeof(f) == TYPE_STRING:
+					var ext = str(f).get_extension().to_lower()
+					if ext in ["png", "jpg", "jpeg", "webp", "svg", "bmp"]:
+						return true
 		return false
 
 	func _drop_data(at_position: Vector2, data: Variant) -> void:
 		if typeof(data) == TYPE_DICTIONARY and data.has("type") and data["type"] == "files":
 			for f in data["files"]:
-				var ext = f.get_extension().to_lower()
+				var ext = str(f).get_extension().to_lower()
 				if ext in ["png", "jpg", "jpeg", "webp", "svg", "bmp"]:
-					chat_window._send_image(f)
+					chat_window._send_image(str(f))
+		elif typeof(data) == TYPE_ARRAY or typeof(data) == TYPE_PACKED_STRING_ARRAY:
+			for f in data:
+				if typeof(f) == TYPE_STRING:
+					var ext = str(f).get_extension().to_lower()
+					if ext in ["png", "jpg", "jpeg", "webp", "svg", "bmp"]:
+						chat_window._send_image(str(f))
 
 var message_vbox: VBoxContainer
 var pinned_vbox: VBoxContainer
@@ -30,6 +42,22 @@ var jump_to_bottom_btn: Button
 
 var messages_data = [] # Array of dictionaries
 var current_display_count = 20
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_READY:
+		var win = get_window()
+		if win and not win.files_dropped.is_connected(_on_window_files_dropped):
+			win.files_dropped.connect(_on_window_files_dropped)
+
+func _on_window_files_dropped(files: PackedStringArray) -> void:
+	if not is_visible_in_tree():
+		return
+	var mouse_pos = get_global_mouse_position()
+	if get_global_rect().has_point(mouse_pos):
+		for f in files:
+			var ext = f.get_extension().to_lower()
+			if ext in ["png", "jpg", "jpeg", "webp", "svg", "bmp"]:
+				_send_image(f)
 
 func _init():
 	# Try to find a global network instance if possible or assign later
@@ -96,6 +124,12 @@ func _init():
 	input_hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main_vbox.add_child(input_hbox)
 
+	var attach_btn = Button.new()
+	attach_btn.text = "📷"
+	attach_btn.tooltip_text = "Attach & send image file"
+	attach_btn.pressed.connect(_on_attach_pressed)
+	input_hbox.add_child(attach_btn)
+
 	input_edit = LineEdit.new()
 	input_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	input_edit.placeholder_text = "Type a message or drag & drop an image..."
@@ -106,6 +140,21 @@ func _init():
 	send_btn.text = "Send"
 	send_btn.pressed.connect(_on_send_pressed)
 	input_hbox.add_child(send_btn)
+
+func _on_attach_pressed() -> void:
+	var fd = FileDialog.new()
+	fd.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	fd.access = FileDialog.ACCESS_FILESYSTEM
+	fd.filters = PackedStringArray(["*.png, *.jpg, *.jpeg, *.webp, *.svg, *.bmp ; Image Files"])
+	fd.file_selected.connect(func(path: String):
+		_send_image(path)
+		fd.queue_free()
+	)
+	fd.canceled.connect(func():
+		fd.queue_free()
+	)
+	add_child(fd)
+	fd.popup_centered_ratio(0.7)
 
 func _send_image(path: String):
 	if network:
@@ -191,6 +240,11 @@ func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
 	mcontainer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	mcontainer.mouse_filter = Control.MOUSE_FILTER_PASS
 
+	var content_vbox = VBoxContainer.new()
+	content_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content_vbox.mouse_filter = Control.MOUSE_FILTER_PASS
+	mcontainer.add_child(content_vbox)
+
 	var rtl = RichTextLabel.new()
 	rtl.bbcode_enabled = true
 	rtl.fit_content = true
@@ -210,12 +264,52 @@ func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
 		# Sanitize basic tags to avoid malicious inputs breaking bbcode formatting
 		text = text.replace("[", "[lb]")
 		rtl.text = "[color=#" + color + "][b]" + sender_name + ":[/b][/color] " + text
+		content_vbox.add_child(rtl)
 	elif type == "image":
-		var path = m.get("path", "")
-		path = path.replace("[", "[lb]")
-		rtl.text = "[color=#" + color + "][b]" + sender_name + ":[/b][/color]\n[img width=150]" + path + "[/img]"
+		rtl.text = "[color=#" + color + "][b]" + sender_name + ":[/b][/color]"
+		content_vbox.add_child(rtl)
 
-	mcontainer.add_child(rtl)
+		var img_hash = m.get("image_hash", "")
+		var path = m.get("path", "")
+		var file_path = ""
+		if img_hash != "":
+			file_path = "user://team_create_chat".path_join(img_hash + ".png")
+		elif path != "":
+			file_path = path
+
+		var img = null
+		if file_path != "" and FileAccess.file_exists(file_path):
+			img = Image.load_from_file(file_path)
+		elif file_path != "" and ResourceLoader.exists(file_path):
+			var res = load(file_path)
+			if res is Texture2D:
+				img = res.get_image()
+
+		if img and not img.is_empty():
+			var tex = ImageTexture.create_from_image(img)
+			var tex_rect = TextureRect.new()
+			tex_rect.texture = tex
+			tex_rect.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+			tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			var max_w = 260.0
+			var w = min(float(tex.get_width()), max_w)
+			var h = (float(tex.get_height()) / float(tex.get_width())) * w if tex.get_width() > 0 else 100.0
+			tex_rect.custom_minimum_size = Vector2(w, h)
+			tex_rect.mouse_filter = Control.MOUSE_FILTER_PASS
+			tex_rect.tooltip_text = "Click to open image in system viewer"
+			var target_file_path = file_path
+			tex_rect.gui_input.connect(func(event: InputEvent):
+				if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+					OS.shell_open(ProjectSettings.globalize_path(target_file_path))
+			)
+			content_vbox.add_child(tex_rect)
+		else:
+			if network and network.has_method("get_chat_image_path") and img_hash != "":
+				network.get_chat_image_path(img_hash)
+			var fallback_lbl = Label.new()
+			fallback_lbl.text = "[Loading image: " + (img_hash.substr(0, 8) if img_hash != "" else path.get_file()) + "...]"
+			fallback_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+			content_vbox.add_child(fallback_lbl)
 
 	var pin_btn = Button.new()
 	pin_btn.text = "📌" if m.get("pinned", false) else "📍"
@@ -231,3 +325,8 @@ func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
 	mcontainer.add_child(pin_btn)
 
 	return mcontainer
+
+func refresh_images():
+	var scrollbar = scroll_container.get_v_scroll_bar()
+	var is_at_bottom = scrollbar.value >= scrollbar.max_value - scrollbar.page - 1.0
+	_refresh_messages(is_at_bottom)
