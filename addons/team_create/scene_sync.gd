@@ -149,6 +149,7 @@ func _get_target_scene(scene_path: String) -> Node:
 					else:
 						_server_dummy_scenes.erase(scene_path)
 					get_tree().root.add_child(instance)
+					_index_scene_subresources(instance)
 					return instance
 
 			_failed_scene_loads[scene_path] = true
@@ -307,6 +308,10 @@ const CAMERA_SAVE_INTERVAL: float = 1.0
 var _is_camera_dirty: bool = false
 var _is_switching_scene_tab: bool = false
 var _tab_switch_cooldown: float = 0.0
+
+# Shared Sub-Resource Tracking (ensures duplicated nodes sharing meshes/materials remain shared across peers and server saves)
+var _resource_to_subres_id: Dictionary = {}
+var _subres_id_to_resource: Dictionary = {}
 
 # Tracking structure changes locally so we don't bounce events back and forth
 var _ignore_next_structure_event = false
@@ -523,10 +528,26 @@ func _process_pending_resource_properties():
 						var res = load(pending.value)
 						if res:
 							node.set(pending.prop_name, res)
-					elif typeof(pending.value) == TYPE_DICTIONARY:
-						var res = _import_sub_resource(pending.value)
-						if res:
-							node.set(pending.prop_name, res)
+					elif typeof(pending.value) == TYPE_DICTIONARY and pending.value.has("sub_resource_bytes"):
+						var subres_id = pending.value.get("sub_resource_id", "")
+						var existing_res = _get_cached_subresource(subres_id) if subres_id != "" else null
+						if existing_res:
+							var updated = _update_existing_subresource(existing_res, pending.value)
+							if updated:
+								if node.get(pending.prop_name) != existing_res:
+									node.set(pending.prop_name, existing_res)
+							else:
+								var res = _import_sub_resource(pending.value)
+								if res:
+									if subres_id != "":
+										_register_subresource(res, subres_id)
+									node.set(pending.prop_name, res)
+						else:
+							var res = _import_sub_resource(pending.value)
+							if res:
+								if subres_id != "":
+									_register_subresource(res, subres_id)
+								node.set(pending.prop_name, res)
 					_is_applying_remote_update = false
 					mark_scene_dirty(pending.scene_path)
 			_pending_resource_properties.remove_at(i)
@@ -555,6 +576,7 @@ func _track_active_scene():
 		_tab_switch_cooldown = 0.4
 		_local_3d_cursor_pos = Transform3D()
 
+		_index_scene_subresources(current_scene)
 		_defer_restore_camera(cur_path)
 		if network and network.is_connected_to_session():
 			network.report_current_scene(cur_path, _user_scene_cameras.get(cur_path, {}))
@@ -638,18 +660,7 @@ func _check_single_node_changes(node: Node):
 							val.connect("changed", _on_resource_changed.bind(id, p.name, val))
 
 						if force_res_update:
-							var temp_path = "user://tc_sync_export_" + str(val.get_instance_id()) + ".tres"
-							ResourceSaver.save(val, temp_path)
-							var bytes = PackedByteArray()
-							var text = ""
-							if FileAccess.file_exists(temp_path):
-								bytes = FileAccess.get_file_as_bytes(temp_path)
-								text = FileAccess.get_file_as_string(temp_path)
-								DirAccess.remove_absolute(temp_path)
-							var rpath = val.resource_path
-							if rpath.begins_with("user://"):
-								rpath = ""
-							current_props[p.name] = {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": rpath, "resource_instance_id": val.get_instance_id()}
+							current_props[p.name] = export_sub_resource_dict(val)
 						else:
 							current_props[p.name] = _last_tracked_properties[id][p.name]
 			else:
@@ -1067,18 +1078,7 @@ func _sync_all_node_properties(node: Node, id: String, scene_path: String = ""):
 							if not val.is_connected("changed", _on_resource_changed.bind(id, p.name, val)):
 								val.connect("changed", _on_resource_changed.bind(id, p.name, val))
 
-							var temp_path = "user://tc_sync_export_" + str(val.get_instance_id()) + ".tres"
-							ResourceSaver.save(val, temp_path)
-							var bytes = PackedByteArray()
-							var text = ""
-							if FileAccess.file_exists(temp_path):
-								bytes = FileAccess.get_file_as_bytes(temp_path)
-								text = FileAccess.get_file_as_string(temp_path)
-								DirAccess.remove_absolute(temp_path)
-							var rpath = val.resource_path
-							if rpath.begins_with("user://"):
-								rpath = ""
-							current_props[p.name] = {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": rpath, "resource_instance_id": val.get_instance_id()}
+							current_props[p.name] = export_sub_resource_dict(val)
 				else:
 					current_props[p.name] = val
 
@@ -1467,9 +1467,25 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 								break
 
 				if is_ready:
-					var res = _import_sub_resource(value)
-					if res:
-						node.set(prop_name, res)
+					var subres_id = value.get("sub_resource_id", "")
+					var existing_res = _get_cached_subresource(subres_id) if subres_id != "" else null
+					if existing_res:
+						var updated = _update_existing_subresource(existing_res, value)
+						if updated:
+							if node.get(prop_name) != existing_res:
+								node.set(prop_name, existing_res)
+						else:
+							var res = _import_sub_resource(value)
+							if res:
+								if subres_id != "":
+									_register_subresource(res, subres_id)
+								node.set(prop_name, res)
+					else:
+						var res = _import_sub_resource(value)
+						if res:
+							if subres_id != "":
+								_register_subresource(res, subres_id)
+							node.set(prop_name, res)
 				else:
 					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "sender_id": sender_id, "timeout": Time.get_ticks_msec() + 30000})
 			elif prop_name == "__connections__":
@@ -1822,6 +1838,9 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 				editor.reload_scene_from_path(path)
 				network.tc_print("Team Create: Applying received scene to active view.")
 				_defer_restore_camera(path)
+				var cur_reloaded = _get_edited_scene_root()
+				if cur_reloaded:
+					_index_scene_subresources(cur_reloaded)
 
 				get_tree().create_timer(0.5).timeout.connect(func():
 					_is_reloading_scene = false
@@ -1974,6 +1993,7 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 						else:
 							_server_dummy_scenes.erase(path)
 						get_tree().root.add_child(instance)
+						_index_scene_subresources(instance)
 			else:
 				var editor = _get_editor_interface()
 				if editor:
@@ -1984,6 +2004,7 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 						_is_reloading_scene = true
 						editor.reload_scene_from_path(path)
 						_defer_restore_camera(path)
+						_index_scene_subresources(current_scene)
 						get_tree().create_timer(0.5).timeout.connect(func():
 							_is_reloading_scene = false
 							if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
@@ -2436,6 +2457,8 @@ func _import_sub_resource(value: Dictionary) -> Resource:
 	return null
 
 func _on_resource_changed(target, prop_name: String, res: Resource):
+	if _is_applying_remote_update:
+		return
 	var id = ""
 	if typeof(target) == TYPE_STRING:
 		id = target
@@ -2448,9 +2471,82 @@ func _on_resource_changed(target, prop_name: String, res: Resource):
 	if _last_tracked_properties.has(id) and _last_tracked_properties[id].has(prop_name):
 		_last_tracked_properties[id].erase(prop_name)
 
+func _get_or_create_subresource_id(res: Resource) -> String:
+	if not res:
+		return ""
+	var inst_id = res.get_instance_id()
+	if _resource_to_subres_id.has(inst_id):
+		return _resource_to_subres_id[inst_id]
+
+	var sub_id = ""
+	if res.resource_path != "" and "::" in res.resource_path:
+		sub_id = res.resource_path
+	else:
+		sub_id = str(ResourceUID.create_id())
+
+	_resource_to_subres_id[inst_id] = sub_id
+	_subres_id_to_resource[sub_id] = weakref(res)
+	return sub_id
+
+func _register_subresource(res: Resource, subres_id: String):
+	if not res or subres_id == "":
+		return
+	var inst_id = res.get_instance_id()
+	_resource_to_subres_id[inst_id] = subres_id
+	_subres_id_to_resource[sub_id] = weakref(res)
+
+func _get_cached_subresource(subres_id: String) -> Resource:
+	if subres_id == "":
+		return null
+	if _subres_id_to_resource.has(subres_id):
+		var wr = _subres_id_to_resource[subres_id]
+		if wr is WeakRef:
+			var ref = wr.get_ref()
+			if is_instance_valid(ref) and ref is Resource:
+				return ref
+		_subres_id_to_resource.erase(subres_id)
+	return null
+
+func _update_existing_subresource(existing_res: Resource, value: Dictionary) -> bool:
+	if not existing_res:
+		return false
+	var temp_res = _import_sub_resource(value)
+	if not temp_res:
+		return false
+	if temp_res.get_class() != existing_res.get_class():
+		return false
+
+	for p in temp_res.get_property_list():
+		if (p.usage & PROPERTY_USAGE_STORAGE) or (p.usage & PROPERTY_USAGE_EDITOR):
+			if p.name == "resource_path" or p.name == "resource_name" or p.name == "script" or p.name.begins_with("metadata/"):
+				continue
+			var new_val = temp_res.get(p.name)
+			var cur_val = existing_res.get(p.name)
+			if typeof(new_val) != typeof(cur_val) or new_val != cur_val:
+				existing_res.set(p.name, new_val)
+
+	existing_res.emit_changed()
+	return true
+
+func _index_scene_subresources(node: Node):
+	if not is_instance_valid(node):
+		return
+	var props = node.get_property_list()
+	for p in props:
+		if (p.usage & PROPERTY_USAGE_STORAGE) or (p.usage & PROPERTY_USAGE_EDITOR):
+			if p.name.begins_with("metadata/"):
+				continue
+			var val = node.get(p.name)
+			if val is Resource:
+				if not (val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path):
+					_get_or_create_subresource_id(val)
+	for child in node.get_children():
+		_index_scene_subresources(child)
+
 func export_sub_resource_dict(res: Resource) -> Dictionary:
 	if not res:
 		return {}
+	var subres_id = _get_or_create_subresource_id(res)
 	var temp_path = "user://tc_sync_export_" + str(res.get_instance_id()) + ".tres"
 	ResourceSaver.save(res, temp_path)
 	var bytes = PackedByteArray()
@@ -2462,7 +2558,13 @@ func export_sub_resource_dict(res: Resource) -> Dictionary:
 	var rpath = res.resource_path
 	if rpath.begins_with("user://"):
 		rpath = ""
-	return {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": rpath, "resource_instance_id": res.get_instance_id()}
+	return {
+		"sub_resource_bytes": bytes,
+		"sub_resource_text": text,
+		"resource_path": rpath,
+		"resource_instance_id": res.get_instance_id(),
+		"sub_resource_id": subres_id
+	}
 
 # ==============================================================================
 # Per-User, Per-Scene Camera Persistence

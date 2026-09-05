@@ -761,6 +761,8 @@ func disconnect_peer():
 		scene_sync._active_node_locks.clear()
 		scene_sync._pending_selection_nodes.clear()
 		scene_sync._pending_selection_index = 0
+		scene_sync._resource_to_subres_id.clear()
+		scene_sync._subres_id_to_resource.clear()
 		scene_sync._is_applying_remote_update = false
 		scene_sync._is_reloading_scene = false
 		scene_sync._ignore_next_structure_event = false
