@@ -2493,7 +2493,7 @@ func _register_subresource(res: Resource, subres_id: String):
 		return
 	var inst_id = res.get_instance_id()
 	_resource_to_subres_id[inst_id] = subres_id
-	_subres_id_to_resource[sub_id] = weakref(res)
+	_subres_id_to_resource[subres_id] = weakref(res)
 
 func _get_cached_subresource(subres_id: String) -> Resource:
 	if subres_id == "":
