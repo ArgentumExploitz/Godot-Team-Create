@@ -542,6 +542,7 @@ func _track_active_scene():
 		_last_tracked_properties.clear()
 		_pending_selection_nodes.clear()
 		_pending_selection_index = 0
+		_node_names[current_scene.get_instance_id()] = current_scene.name
 
 		if _last_scene_path != "":
 			_defer_restore_camera(_last_scene_path)
@@ -993,6 +994,11 @@ func _on_node_added(node: Node):
 	if owner_at_add != null:
 		return
 
+	# Always generate a fresh distinct UUID for newly added/duplicated nodes
+	# so duplicate nodes (Ctrl+D) never inherit the original node's UUID
+	var new_uuid = str(ResourceUID.create_id())
+	node.set_meta("_tc_uuid", new_uuid)
+
 	var parent_id = network.assign_unique_id(node.get_parent())
 	var type = node.get_class()
 	var new_name = node.name
@@ -1002,7 +1008,7 @@ func _on_node_added(node: Node):
 	_node_names[node.get_instance_id()] = new_name
 
 	var scene_path = current_scene.scene_file_path
-	rpc("remote_node_added", parent_id, type, new_name, new_id, scene_path, node_scene_path)
+	rpc("remote_node_added", parent_id, type, new_name, new_uuid, scene_path, node_scene_path)
 	mark_scene_dirty(scene_path)
 
 	# Immediately sync properties of the new node to catch duplicates
@@ -1168,8 +1174,23 @@ func _on_node_renamed(node: Node):
 	if _ignore_next_structure_event or _is_reloading_scene or not (network and network.is_connected_to_session()) or _get_connected_peers().is_empty():
 		return
 
-	var parent = node.get_parent()
 	var inst_id = node.get_instance_id()
+	var current_scene = _get_edited_scene_root()
+	var scene_path = current_scene.scene_file_path if current_scene else ""
+
+	# Check if this node is the top-level scene root itself
+	if current_scene and node == current_scene:
+		var old_name = _node_names.get(inst_id, "")
+		var new_name = node.name
+		if old_name != "" and old_name != new_name:
+			_node_names[inst_id] = new_name
+			rpc("remote_node_renamed_exact", "__SCENE_ROOT__", old_name, new_name, scene_path)
+			mark_scene_dirty(scene_path)
+		elif old_name == "":
+			_node_names[inst_id] = new_name
+		return
+
+	var parent = node.get_parent()
 	if parent and _node_names.has(inst_id):
 		var old_name = _node_names[inst_id]
 		var new_name = node.name
@@ -1177,10 +1198,6 @@ func _on_node_renamed(node: Node):
 		if old_name != new_name:
 			_node_names[inst_id] = new_name
 			var parent_id = network.assign_unique_id(parent)
-			var scene_path = ""
-			var current_scene = _get_edited_scene_root()
-			if current_scene:
-				scene_path = current_scene.scene_file_path
 			rpc("remote_node_renamed_exact", parent_id, old_name, new_name, scene_path)
 			mark_scene_dirty(scene_path)
 
@@ -1301,6 +1318,12 @@ func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: St
 	var current_scene = _get_target_scene(scene_path)
 	if current_scene:
 		if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
+			_ignore_next_structure_event = false
+			return
+		if parent_id == "__SCENE_ROOT__":
+			current_scene.name = new_name
+			_node_names[current_scene.get_instance_id()] = new_name
+			mark_scene_dirty(scene_path)
 			_ignore_next_structure_event = false
 			return
 		var parent = network.get_node_by_unique_id(current_scene, parent_id)

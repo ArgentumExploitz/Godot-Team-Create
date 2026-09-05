@@ -31,6 +31,7 @@ var _console_should_exit: bool = false
 var auto_save_prints_enabled: bool = false
 var timeprint_enabled: bool = true
 var joins_enabled: bool = true
+var allow_client_file_deletions: bool = true
 var chat_locked: bool = false
 var chat_images_enabled: bool = true
 var muted_users = []
@@ -147,6 +148,7 @@ func _process_console_command(input: String):
 			tc_print_rich("[color=white]/filesize <num or none>[/color] - Sets maximum file size limit")
 			tc_print_rich("[color=white]/backup [scene][/color]       - Creates a snapshot backup of scenes")
 			tc_print_rich("[color=white]/autobackup <true/false>[/color] - Toggles automatic backups (default: false)")
+			tc_print_rich("[color=white]/allowdeletions <true/false>[/color] - Toggles client-side file deletion replication (default: true)")
 			tc_print_rich("[color=white]/test <user> [1-6][/color]     - Runs automated live sync tests on target scene")
 			tc_print_rich("[color=cyan]--------------------------[/color]")
 		else:
@@ -346,6 +348,24 @@ func _process_console_command(input: String):
 				if multiplayer.multiplayer_peer and multiplayer.multiplayer_peer is ENetMultiplayerPeer:
 					multiplayer.multiplayer_peer.refuse_new_connections = true
 				tc_print_rich("[color=green]Joining is now disabled.[/color]")
+			else:
+				tc_print_rich("[color=red]Invalid argument. Use true or false.[/color]")
+
+	elif cmd == "/allowdeletions":
+		if args.size() < 2:
+			tc_print_rich("[color=orange]Usage: /allowdeletions <true/false>[/color]")
+		else:
+			var val = args[1].to_lower()
+			if val == "true":
+				allow_client_file_deletions = true
+				if file_sync:
+					file_sync.allow_client_file_deletions = true
+				tc_print_rich("[color=green]Client file deletions enabled.[/color]")
+			elif val == "false":
+				allow_client_file_deletions = false
+				if file_sync:
+					file_sync.allow_client_file_deletions = false
+				tc_print_rich("[color=yellow]Client file deletions disabled (server-only deletions).[/color]")
 			else:
 				tc_print_rich("[color=red]Invalid argument. Use true or false.[/color]")
 
@@ -688,6 +708,8 @@ func host_server():
 
 	multiplayer.multiplayer_peer = peer
 	is_server = true
+	if file_sync:
+		file_sync._initial_sync_done = true
 	if is_standalone_server and file_sync:
 		file_sync._setup_http_server()
 
@@ -751,6 +773,8 @@ func disconnect_peer():
 		ui.set_disconnected()
 	if file_sync:
 		file_sync._hide_sync_blocker()
+		file_sync._initial_sync_done = false
+		file_sync.downloading_files.clear()
 		if file_sync.has_method("stop_http_server"):
 			file_sync.stop_http_server()
 	if was_connected:
@@ -1073,9 +1097,6 @@ func sync_all_files_to_peer(id: int):
 static func assign_unique_id(node: Node) -> String:
 	if not is_instance_valid(node):
 		return ""
-	if not node.has_meta("_tc_uuid"):
-		var uid = str(ResourceUID.create_id())
-		node.set_meta("_tc_uuid", uid)
 
 	var root: Node = null
 	if node.owner:
@@ -1084,6 +1105,16 @@ static func assign_unique_id(node: Node) -> String:
 		var tree = node.get_tree()
 		if tree and tree.edited_scene_root:
 			root = tree.edited_scene_root
+
+	if not node.has_meta("_tc_uuid"):
+		var uid = str(ResourceUID.create_id())
+		node.set_meta("_tc_uuid", uid)
+	elif root and root != node:
+		# Check for UUID collision within the same scene (e.g. from node duplication)
+		var existing = _find_node_by_uuid(root, str(node.get_meta("_tc_uuid")))
+		if existing and existing != node:
+			var uid = str(ResourceUID.create_id())
+			node.set_meta("_tc_uuid", uid)
 
 	if root:
 		if node == root:

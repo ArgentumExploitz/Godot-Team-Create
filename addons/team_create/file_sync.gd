@@ -240,6 +240,8 @@ var _known_files: Array = []
 var _file_hash_cache: Dictionary = {}
 signal sync_completed
 var auto_backups_enabled = false
+var allow_client_file_deletions = true
+var _initial_sync_done = false
 signal asset_imported(path: String)
 
 func backup_scene(path: String, is_manual: bool = false) -> String:
@@ -361,6 +363,9 @@ func _hide_sync_blocker():
 
 func _ready():
 	call_deferred("_setup_fs_signals")
+	sync_completed.connect(func():
+		_initial_sync_done = true
+	)
 
 func _setup_fs_signals():
 	var ei = _get_editor_interface()
@@ -421,10 +426,16 @@ func _on_filesystem_changed():
 	# Automatically sync files whenever Godot detects a local file system change.
 	sync_all_files(current_files)
 
-	# Check for local deletions and broadcast them
-	for known_path in _known_files:
-		if not current_files_dict.has(known_path):
-			rpc("remote_delete_file", known_path)
+	# Check for local deletions and broadcast them ONLY if initial sync has completed,
+	# we are not currently syncing/downloading, and the file was genuinely verified to exist locally previously.
+	if _initial_sync_done and not _is_syncing_files and downloading_files.is_empty():
+		for known_path in _known_files:
+			if not current_files_dict.has(known_path):
+				if not _is_safe_path(known_path):
+					continue
+				# Verify this path was genuinely present and cached on disk before deletion
+				if _file_hash_cache.has(known_path) or not FileAccess.file_exists(known_path):
+					rpc("remote_delete_file", known_path)
 
 	_known_files = current_files.duplicate()
 
@@ -850,24 +861,56 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 			sync_completed.emit()
 
 
-# TODO: Handle cases where a local file is deleted while offline/disconnected before broadcasting
 @rpc("any_peer", "reliable")
 func remote_delete_file(path: String):
-	if multiplayer.get_remote_sender_id() != 1:
-		return # Only server can dictate deletions for security
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 1
+	var is_srv = network and network.is_server
 
 	if not _is_safe_path(path):
 		return
 
+	# If received on server from a client, check setting
+	if is_srv and sender_id != 1:
+		var allow_del = allow_client_file_deletions
+		if network and "allow_client_file_deletions" in network:
+			allow_del = network.allow_client_file_deletions
+		if not allow_del:
+			network.tc_print("Team Create: Blocked client deletion request for ", path, " (allow_client_file_deletions is false)")
+			return
+
+	# If on a client and message did NOT come from server (peer 1), reject
+	if not is_srv and sender_id != 1:
+		return
+
 	if FileAccess.file_exists(path):
-		DirAccess.remove_absolute(path)
+		if path.ends_with(".tscn") or path.ends_with(".scn") or path.ends_with(".gd"):
+			var trash_dir = "res://.team_create/trash"
+			if not DirAccess.dir_exists_absolute(trash_dir):
+				DirAccess.make_dir_recursive_absolute(trash_dir)
+			var trash_dest = trash_dir + "/" + path.get_file()
+			DirAccess.rename_absolute(path, trash_dest)
+			network.tc_print("Team Create: Moved deleted file to trash backup: ", path, " -> ", trash_dest)
+		else:
+			var err = DirAccess.remove_absolute(path)
+			if err == OK:
+				network.tc_print("Team Create: Replicated file deletion: ", path)
+
 		if _file_hash_cache.has(path):
 			_file_hash_cache.erase(path)
-		network.tc_print("Team Create: Replicated file deletion: ", path)
 
-		# Remove from known files
 		if _known_files.has(path):
 			_known_files.erase(path)
+
+		var ei = _get_editor_interface()
+		if ei and ei.get_resource_filesystem():
+			ei.get_resource_filesystem().scan()
+
+	# If server received and approved client deletion, broadcast to all OTHER clients
+	if is_srv and sender_id != 0:
+		if network and network.multiplayer:
+			for peer_id in network.multiplayer.get_peers():
+				if peer_id != sender_id and peer_id != 1:
+					rpc_id(peer_id, "remote_delete_file", path)
 
 func _finish_http_download(path: String):
 	downloading_files.erase(path)
