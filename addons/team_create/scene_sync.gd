@@ -410,6 +410,17 @@ func _process(delta):
 
 	_process_pending_resource_properties()
 
+	# Periodic camera cache flush to disk (runs online and offline)
+	if _is_camera_dirty:
+		_camera_save_timer += delta
+		if _camera_save_timer >= CAMERA_SAVE_INTERVAL:
+			_camera_save_timer = 0.0
+			_save_camera_cache()
+
+	# Always sync local camera & track scene tab switches even when offline
+	_sync_cursor_throttled(delta)
+	_track_active_scene()
+
 	if not network or not network.plugin or not network.is_connected_to_session():
 		if not _pending_selection_nodes.is_empty():
 			_pending_selection_nodes.clear()
@@ -425,14 +436,6 @@ func _process(delta):
 		_time_since_sync = 0.0
 		_track_selection()
 		_track_changes_throttled()
-	_sync_cursor_throttled(delta)
-
-	if _last_scene_path != "":
-		_camera_save_timer += delta
-		if _camera_save_timer >= CAMERA_SAVE_INTERVAL:
-			_camera_save_timer = 0.0
-			save_current_camera_for_scene(_last_scene_path)
-			_save_camera_cache()
 
 func _get_active_sync_interval() -> float:
 	var ei = _get_editor_interface()
@@ -524,16 +527,12 @@ func _process_pending_resource_properties():
 			if Time.get_ticks_msec() > pending.timeout:
 				_pending_resource_properties.remove_at(i)
 
-func _track_changes_throttled():
+func _track_active_scene():
 	var current_scene = _get_edited_scene_root()
 	if not current_scene:
 		return
 
 	if current_scene.scene_file_path != _last_scene_path:
-		if _last_scene_path != "":
-			save_current_camera_for_scene(_last_scene_path)
-			_save_camera_cache()
-
 		_last_scene_path = current_scene.scene_file_path
 		_last_tracked_properties.clear()
 		_pending_selection_nodes.clear()
@@ -543,11 +542,18 @@ func _track_changes_throttled():
 			_defer_restore_camera(_last_scene_path)
 			if network and network.is_connected_to_session():
 				network.report_current_scene(_last_scene_path, _user_scene_cameras.get(_last_scene_path, {}))
-			rpc("request_scene_state", _last_scene_path)
-			if _pending_offline_merges.has(_last_scene_path):
-				get_tree().create_timer(0.5).timeout.connect(func():
-					apply_offline_merge_deferred(_last_scene_path)
-				)
+				rpc("request_scene_state", _last_scene_path)
+				if _pending_offline_merges.has(_last_scene_path):
+					get_tree().create_timer(0.5).timeout.connect(func():
+						apply_offline_merge_deferred(_last_scene_path)
+					)
+
+func _track_changes_throttled():
+	var current_scene = _get_edited_scene_root()
+	if not current_scene:
+		return
+
+	_track_active_scene()
 
 	if _force_full_sync_next_frame:
 		_force_full_sync_next_frame = false
@@ -1756,6 +1762,10 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 			if is_active and editor:
 				var merge_data = prepare_offline_scene_merge(path, bytes)
 
+				# Save camera for active view immediately before reloading
+				save_current_camera_for_scene(path, true)
+				_save_camera_cache()
+
 				# 1. Write to disk and force reload
 				if bytes.size() > 0:
 					if network and network.file_sync:
@@ -1931,6 +1941,8 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 				if editor:
 					var current_scene = editor.get_edited_scene_root()
 					if current_scene and current_scene.scene_file_path == path:
+						save_current_camera_for_scene(path, true)
+						_save_camera_cache()
 						_is_reloading_scene = true
 						editor.reload_scene_from_path(path)
 						_defer_restore_camera(path)
@@ -1986,18 +1998,30 @@ func _sync_cursor_throttled(delta):
 	_last_cursor_sync += delta
 	if _last_cursor_sync >= CURSOR_SYNC_INTERVAL:
 		_last_cursor_sync = 0.0
-		if network and network.is_connected_to_session():
-			var data = _get_local_cursor_data()
-			if typeof(data) == TYPE_DICTIONARY and data.get("has_3d", false):
-				var pos_3d = data.get("pos_3d", Transform3D())
-				if pos_3d != _local_3d_cursor_pos:
-					_local_3d_cursor_pos = pos_3d
+		var data = _get_local_cursor_data()
+		if typeof(data) == TYPE_DICTIONARY and data.get("has_3d", false):
+			var pos_3d = data.get("pos_3d", Transform3D())
+			if pos_3d != _local_3d_cursor_pos:
+				_local_3d_cursor_pos = pos_3d
+				# Camera moved! Save camera position immediately in memory for active scene
+				if _last_scene_path != "" and not _is_restoring_camera and not _is_reloading_scene:
+					if pos_3d.origin.is_finite() and pos_3d.basis.is_finite():
+						_user_scene_cameras[_last_scene_path] = {
+							"has_3d": true,
+							"origin": [pos_3d.origin.x, pos_3d.origin.y, pos_3d.origin.z],
+							"basis_x": [pos_3d.basis.x.x, pos_3d.basis.x.y, pos_3d.basis.x.z],
+							"basis_y": [pos_3d.basis.y.x, pos_3d.basis.y.y, pos_3d.basis.y.z],
+							"basis_z": [pos_3d.basis.z.x, pos_3d.basis.z.y, pos_3d.basis.z.z]
+						}
+						_is_camera_dirty = true
+				if network and network.is_connected_to_session():
 					var my_uid = multiplayer.get_unique_id()
 					rpc("update_peer_cursor_3d", my_uid, _local_3d_cursor_pos, _last_scene_path)
-			elif typeof(data) == TYPE_DICTIONARY and data.get("has_2d", false):
-				var pos_2d = data.get("pos_2d", Vector2.ZERO)
-				if pos_2d != _local_2d_cursor_pos:
-					_local_2d_cursor_pos = pos_2d
+		elif typeof(data) == TYPE_DICTIONARY and data.get("has_2d", false):
+			var pos_2d = data.get("pos_2d", Vector2.ZERO)
+			if pos_2d != _local_2d_cursor_pos:
+				_local_2d_cursor_pos = pos_2d
+				if network and network.is_connected_to_session():
 					var my_uid = multiplayer.get_unique_id()
 					rpc("update_peer_cursor_2d", my_uid, _local_2d_cursor_pos, _last_scene_path)
 
@@ -2411,12 +2435,16 @@ func _save_camera_cache():
 		f.store_string(JSON.stringify(_user_scene_cameras, "\t"))
 		f.close()
 
-func save_current_camera_for_scene(scene_path: String):
+func save_current_camera_for_scene(scene_path: String, force: bool = false):
 	if scene_path == "" or DisplayServer.get_name() == "headless" or (network and network.get("is_standalone_server")):
+		return
+	if not force and (_is_restoring_camera or _is_reloading_scene):
 		return
 	var data = _get_local_cursor_data()
 	if typeof(data) == TYPE_DICTIONARY and data.get("has_3d", false):
 		var t: Transform3D = data.get("pos_3d", Transform3D())
+		if not t.origin.is_finite() or not t.basis.is_finite():
+			return
 		_user_scene_cameras[scene_path] = {
 			"has_3d": true,
 			"origin": [t.origin.x, t.origin.y, t.origin.z],
@@ -2453,20 +2481,47 @@ func restore_camera_for_scene(scene_path: String):
 	if not ei or not ei.has_method("get_editor_main_screen"):
 		return
 	var main_screen = ei.get_editor_main_screen()
-	if not is_instance_valid(main_screen):
+	if not is_instance_valid(main_screen) or not main_screen.is_inside_tree():
 		return
 
-	if not is_instance_valid(_cached_3d_viewport):
+	if not is_instance_valid(_cached_3d_viewport) or not _cached_3d_viewport.is_inside_tree():
 		_cached_3d_viewport = _find_editor_viewport(main_screen, "Node3DEditorViewport")
 	if is_instance_valid(_cached_3d_viewport):
-		if not is_instance_valid(_cached_3d_camera):
+		if not is_instance_valid(_cached_3d_camera) or not _cached_3d_camera.is_inside_tree():
 			_cached_3d_camera = _find_editor_camera_3d(_cached_3d_viewport)
 		if is_instance_valid(_cached_3d_camera):
 			_cached_3d_camera.global_transform = target_transform
-			network.tc_print("Team Create: Restored saved camera position for scene: ", scene_path)
+			_local_3d_cursor_pos = target_transform
+
+var _is_restoring_camera: bool = false
+var _restore_camera_token: int = 0
 
 func _defer_restore_camera(scene_path: String):
-	if scene_path == "": return
+	if scene_path == "" or not _user_scene_cameras.has(scene_path):
+		return
+	if DisplayServer.get_name() == "headless" or (network and network.get("is_standalone_server")):
+		return
+
+	_restore_camera_token += 1
+	var token = _restore_camera_token
+	_is_restoring_camera = true
+
+	# Wait 2 process frames for scene hierarchy to mount
 	await get_tree().process_frame
 	await get_tree().process_frame
+	if token != _restore_camera_token:
+		return
 	restore_camera_for_scene(scene_path)
+
+	# Re-apply after 0.15s to ensure Godot's internal viewport initialization does not override
+	await get_tree().create_timer(0.15).timeout
+	if token != _restore_camera_token:
+		return
+	restore_camera_for_scene(scene_path)
+	_is_restoring_camera = false
+
+func _exit_tree():
+	var cur_scn = _get_edited_scene_root()
+	if cur_scn and cur_scn.scene_file_path != "":
+		save_current_camera_for_scene(cur_scn.scene_file_path, true)
+	_save_camera_cache()

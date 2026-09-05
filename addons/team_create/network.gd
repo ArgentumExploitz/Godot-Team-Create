@@ -535,6 +535,11 @@ func host_server():
 
 func join_server(ip: String):
 	server_ip = ip
+	if scene_sync:
+		var cur_scn = scene_sync._get_edited_scene_root()
+		if cur_scn and cur_scn.scene_file_path != "":
+			scene_sync.save_current_camera_for_scene(cur_scn.scene_file_path, true)
+			scene_sync._save_camera_cache()
 	disconnect_peer()
 	var err = peer.create_client(ip, PORT)
 	if err != OK:
@@ -557,11 +562,14 @@ func disconnect_peer():
 		peer.close()
 	is_server = false
 	if scene_sync:
-		if scene_sync._last_scene_path != "":
-			scene_sync.save_current_camera_for_scene(scene_sync._last_scene_path)
+		var cur_scn = scene_sync._get_edited_scene_root()
+		if cur_scn and cur_scn.scene_file_path != "":
+			scene_sync.save_current_camera_for_scene(cur_scn.scene_file_path, true)
+			scene_sync._last_scene_path = cur_scn.scene_file_path
+		elif scene_sync._last_scene_path != "":
+			scene_sync.save_current_camera_for_scene(scene_sync._last_scene_path, true)
 		scene_sync._save_camera_cache()
 		scene_sync.clear_all_peer_indicators()
-		scene_sync._last_scene_path = ""
 		scene_sync._last_tracked_properties.clear()
 		scene_sync._node_names.clear()
 		scene_sync._pre_removal_paths.clear()

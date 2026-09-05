@@ -59,6 +59,11 @@ func _exit_tree() -> void:
 		chat_dock.queue_free()
 		chat_dock = null
 	if network:
+		if network.scene_sync:
+			var cur_scn = network.scene_sync._get_edited_scene_root()
+			if cur_scn and cur_scn.scene_file_path != "":
+				network.scene_sync.save_current_camera_for_scene(cur_scn.scene_file_path, true)
+			network.scene_sync._save_camera_cache()
 		if network.get_parent():
 			network.get_parent().remove_child(network)
 		network.queue_free()
