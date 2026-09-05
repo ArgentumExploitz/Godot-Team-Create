@@ -126,14 +126,14 @@ cd "$(dirname "$0")"
 CFG_FILE="project/addons/team_create/plugin.cfg"
 if [ -f "$CFG_FILE" ]; then
     echo "Checking for Godot Team Create updates..."
-    LOCAL_VER=$(grep -i '^version=' "$CFG_FILE" | head -n1 | cut -d'=' -f2 | tr -d ' "\r')
+    LOCAL_VER=$(grep -i '^version=' "$CFG_FILE" | head -n1 | cut -d'=' -f2 | tr -d ' "\\r')
     REMOTE_CFG=""
     if command -v curl >/dev/null 2>&1; then
         REMOTE_CFG=$(curl -sL --max-time 5 "https://raw.githubusercontent.com/N3rmis/Godot-Team-Create/main/addons/team_create/plugin.cfg" 2>/dev/null)
     elif command -v wget >/dev/null 2>&1; then
         REMOTE_CFG=$(wget -qO- --timeout=5 "https://raw.githubusercontent.com/N3rmis/Godot-Team-Create/main/addons/team_create/plugin.cfg" 2>/dev/null)
     fi
-    REMOTE_VER=$(echo "$REMOTE_CFG" | grep -i '^version=' | head -n1 | cut -d'=' -f2 | tr -d ' "\r')
+    REMOTE_VER=$(echo "$REMOTE_CFG" | grep -i '^version=' | head -n1 | cut -d'=' -f2 | tr -d ' "\\r')
 
     if [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$LOCAL_VER" ]; then
         echo ""
@@ -143,26 +143,67 @@ if [ -f "$CFG_FILE" ]; then
         echo " Latest version:  $REMOTE_VER"
         echo "==================================================="
         echo ""
-        read -p "Do you want to update? (y/n): " choice
-        choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
+
+        choice=""
+        while [ "$choice" != "y" ] && [ "$choice" != "yes" ] && [ "$choice" != "n" ] && [ "$choice" != "no" ]; do
+            if ! read -r -p "Do you want to update? (y/n): " choice; then
+                echo "n"
+                choice="n"
+                break
+            fi
+            choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]' | tr -d ' \\r\\t')
+            if [ "$choice" != "y" ] && [ "$choice" != "yes" ] && [ "$choice" != "n" ] && [ "$choice" != "no" ]; then
+                echo "Please type 'y' (yes) or 'n' (no)."
+            fi
+        done
+
         if [ "$choice" = "y" ] || [ "$choice" = "yes" ]; then
             echo "Downloading update from GitHub..."
             TEMP_ZIP="/tmp/tc_update_$$.zip"
             if command -v curl >/dev/null 2>&1; then
                 curl -sL "https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip" -o "$TEMP_ZIP"
-            else
+            elif command -v wget >/dev/null 2>&1; then
                 wget -qO "$TEMP_ZIP" "https://github.com/N3rmis/Godot-Team-Create/archive/refs/heads/main.zip"
             fi
-            if [ -f "$TEMP_ZIP" ] && command -v unzip >/dev/null 2>&1; then
-                echo "Extracting updated files..."
-                EXTRACT_DIR="/tmp/tc_extract_$$"
-                mkdir -p "$EXTRACT_DIR"
-                unzip -q -o "$TEMP_ZIP" -d "$EXTRACT_DIR"
-                find "$EXTRACT_DIR" -type d -name "team_create" | while read -r tc_dir; do
-                    cp -r "$tc_dir"/* project/addons/team_create/
-                done
-                rm -rf "$EXTRACT_DIR" "$TEMP_ZIP"
-                echo "Update applied successfully!"
+
+            if [ -f "$TEMP_ZIP" ]; then
+                if command -v unzip >/dev/null 2>&1; then
+                    echo "Extracting updated files..."
+                    EXTRACT_DIR="/tmp/tc_extract_$$"
+                    mkdir -p "$EXTRACT_DIR"
+                    unzip -q -o "$TEMP_ZIP" -d "$EXTRACT_DIR"
+                    FOUND_DIR=$(find "$EXTRACT_DIR" -type d -name "team_create" | head -n1)
+                    if [ -n "$FOUND_DIR" ] && [ -d "$FOUND_DIR" ]; then
+                        cp -r "$FOUND_DIR"/* project/addons/team_create/
+                        echo "Update applied successfully!"
+                    else
+                        echo "Error: Could not find team_create folder in downloaded archive."
+                    fi
+                    rm -rf "$EXTRACT_DIR" "$TEMP_ZIP"
+                    echo ""
+                elif command -v python3 >/dev/null 2>&1; then
+                    echo "Extracting updated files..."
+                    python3 -c "
+import zipfile, os, shutil
+with zipfile.ZipFile('$TEMP_ZIP', 'r') as z:
+    for m in z.infolist():
+        if 'addons/team_create/' in m.filename and not m.filename.endswith('/'):
+            rel = m.filename.split('addons/team_create/', 1)[1]
+            t = os.path.join('project/addons/team_create', rel)
+            os.makedirs(os.path.dirname(t), exist_ok=True)
+            with z.open(m) as s, open(t, 'wb') as d:
+                shutil.copyfileobj(s, d)
+"
+                    rm -f "$TEMP_ZIP"
+                    echo "Update applied successfully!"
+                    echo ""
+                else
+                    echo "Error: Neither 'unzip' nor 'python3' found to extract the update."
+                    rm -f "$TEMP_ZIP"
+                    echo ""
+                fi
+            else
+                echo "Error: Failed to download update file."
                 echo ""
             fi
         else
