@@ -284,7 +284,15 @@ func release_all_locks_for_peer(peer_id: int):
 		_active_node_locks.erase(node_id)
 		rpc("grant_node_lock", node_id, 0, "")
 
-const SYNC_INTERVAL = 0.1 # Sync 10 times a second max
+const FAST_SYNC_INTERVAL = 0.1 # Normal sync rate (10 Hz) for <= 10 nodes
+const SLOW_SYNC_INTERVAL = 1.0 # Throttled sync rate (1 Hz) for > 10 nodes
+const LARGE_SELECTION_THRESHOLD = 10 # Selection count threshold to trigger adaptive throttling
+const MAX_PROPERTY_CHECKS_PER_FRAME = 12 # Process at most 12 nodes per frame for lag-free property diffing
+const MAX_LOCK_NODES = 25 # Max node locks to request to avoid flooding RPC buffers
+const MAX_OUTLINE_NODES = 50 # Max visual selection outlines to create in viewport
+
+var _pending_selection_nodes: Array = []
+var _pending_selection_index: int = 0
 
 # Tracking structure changes locally so we don't bounce events back and forth
 var _ignore_next_structure_event = false
@@ -395,14 +403,45 @@ func _process(delta):
 	_process_pending_resource_properties()
 
 	if not network or not network.plugin or not network.is_connected_to_session():
+		if not _pending_selection_nodes.is_empty():
+			_pending_selection_nodes.clear()
+			_pending_selection_index = 0
 		return
 
+	# Incrementally process any batched selection checks across frames to eliminate frame drops
+	_process_batched_selection_checks()
+
 	_time_since_sync += delta
-	if _time_since_sync >= SYNC_INTERVAL:
+	var active_interval = _get_active_sync_interval()
+	if _time_since_sync >= active_interval:
 		_time_since_sync = 0.0
 		_track_selection()
 		_track_changes_throttled()
 	_sync_cursor_throttled(delta)
+
+func _get_active_sync_interval() -> float:
+	var ei = _get_editor_interface()
+	if ei:
+		var selected = ei.get_selection().get_selected_nodes()
+		if selected.size() > LARGE_SELECTION_THRESHOLD:
+			return SLOW_SYNC_INTERVAL
+	return FAST_SYNC_INTERVAL
+
+func _process_batched_selection_checks():
+	if _pending_selection_nodes.is_empty():
+		return
+
+	var checked_count = 0
+	while _pending_selection_index < _pending_selection_nodes.size() and checked_count < MAX_PROPERTY_CHECKS_PER_FRAME:
+		var node = _pending_selection_nodes[_pending_selection_index]
+		_pending_selection_index += 1
+		checked_count += 1
+		if is_instance_valid(node) and node.is_inside_tree():
+			_check_single_node_changes(node)
+
+	if _pending_selection_index >= _pending_selection_nodes.size():
+		_pending_selection_nodes.clear()
+		_pending_selection_index = 0
 
 func _process_pending_resource_properties():
 	if _pending_resource_properties.is_empty():
@@ -478,6 +517,8 @@ func _track_changes_throttled():
 	if current_scene.scene_file_path != _last_scene_path:
 		_last_scene_path = current_scene.scene_file_path
 		_last_tracked_properties.clear()
+		_pending_selection_nodes.clear()
+		_pending_selection_index = 0
 
 		if _last_scene_path != "":
 			rpc("request_scene_state", _last_scene_path)
@@ -494,8 +535,17 @@ func _track_changes_throttled():
 		var ei = _get_editor_interface()
 		if ei:
 			var selected = ei.get_selection().get_selected_nodes()
-			for node in selected:
-				_check_single_node_changes(node)
+			if selected.size() <= LARGE_SELECTION_THRESHOLD:
+				# Fast path: 10 or fewer nodes. Process all immediately in this tick.
+				_pending_selection_nodes.clear()
+				_pending_selection_index = 0
+				for node in selected:
+					_check_single_node_changes(node)
+			else:
+				# Large selection: queue nodes and slice checks across frames to eliminate lag spikes
+				_pending_selection_nodes = selected
+				_pending_selection_index = 0
+				_process_batched_selection_checks()
 
 func _check_all_nodes(node: Node, scene_root: Node):
 	if node.owner == scene_root or node == scene_root:
@@ -605,19 +655,24 @@ func _track_selection():
 			if not selected_ids.has(id):
 				deselected.append(id)
 		for id in deselected:
-			if network and network.is_connected_to_session():
-				if network.is_server:
-					release_node_lock(id, _last_scene_path)
-				else:
-					rpc_id(1, "release_node_lock", id, _last_scene_path)
+			if _active_node_locks.has(id):
+				if network and network.is_connected_to_session():
+					if network.is_server:
+						release_node_lock(id, _last_scene_path)
+					else:
+						rpc_id(1, "release_node_lock", id, _last_scene_path)
 
+		var lock_count = 0
 		for id in selected_ids:
+			if lock_count >= MAX_LOCK_NODES:
+				break
 			if not _last_selected_ids.has(id):
 				if network and network.is_connected_to_session():
 					if network.is_server:
 						request_node_lock(id, _last_scene_path)
 					else:
 						rpc_id(1, "request_node_lock", id, _last_scene_path)
+			lock_count += 1
 
 		_last_selected_ids = selected_ids
 		if network and network.is_connected_to_session():
@@ -653,10 +708,14 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 	if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
 		return
 
-	# Add new indicators
+	# Add new indicators (cap at MAX_OUTLINE_NODES to avoid viewport render stalls on large selections)
+	var drawn_count = 0
 	for id in selected_ids:
+		if drawn_count >= MAX_OUTLINE_NODES:
+			break
 		var node = network.get_node_by_unique_id(current_scene, id)
 		if node:
+			drawn_count += 1
 			if node is Node3D:
 				var outline = MeshInstance3D.new()
 				outline.name = outline_name
