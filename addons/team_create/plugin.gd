@@ -4,8 +4,14 @@ extends EditorPlugin
 var dock: Control
 var chat_dock: Control
 var network: Node
+var export_plugin: EditorExportPlugin = null
 
 func _enter_tree() -> void:
+	# Register automated export cleaner to ensure builds contain zero traces of Team Create
+	if has_method("add_export_plugin"):
+		export_plugin = TeamCreateExportPlugin.new()
+		add_export_plugin(export_plugin)
+
 	# Load UI script and instantiate it.
 	# We're building the UI dynamically to ensure stability and match the screenshot.
 	var ui_script = load("res://addons/team_create/ui.gd")
@@ -47,6 +53,10 @@ func _enter_tree() -> void:
 	check_for_updates()
 
 func _exit_tree() -> void:
+	if export_plugin and has_method("remove_export_plugin"):
+		remove_export_plugin(export_plugin)
+		export_plugin = null
+
 	if has_signal("scene_saved") and scene_saved.is_connected(_on_scene_saved):
 		scene_saved.disconnect(_on_scene_saved)
 
@@ -253,3 +263,56 @@ func _force_close_all_scenes() -> void:
 	if scene_tabs:
 		for i in range(scene_tabs.get_tab_count() - 1, -1, -1):
 			scene_tabs.emit_signal("tab_close_pressed", i)
+
+
+# ==============================================================================
+# Automated Export Cleaner
+# Strips all plugin files and _tc_* metadata from exported game builds.
+# ==============================================================================
+class TeamCreateExportPlugin extends EditorExportPlugin:
+	func _get_name() -> String:
+		return "TeamCreateExportCleaner"
+
+	func _get_customization_configuration_hash() -> int:
+		return "TeamCreateExportCleaner_v1".hash()
+
+	func _export_file(path: String, type: String, features: PackedStringArray) -> void:
+		# Exclude all Team Create plugin files and persistent data from exported packages
+		if path.begins_with("res://addons/team_create/") or path.begins_with("res://.team_create/") or path == "res://addons/team_create":
+			skip()
+
+	func _begin_customize_scenes(platform, features: PackedStringArray) -> bool:
+		return true
+
+	func _customize_scene(scene: Node, path: String) -> Node:
+		var modified := _strip_team_create_from_node(scene)
+		if modified:
+			return scene
+		return null
+
+	func _strip_team_create_from_node(node: Node) -> bool:
+		if not node:
+			return false
+		var changed := false
+
+		# Strip Team Create metadata from this node
+		for meta_name in node.get_meta_list():
+			var meta_str := str(meta_name)
+			if meta_str == "_tc_uuid" or meta_str == "team_create_outline_peer" or meta_str.begins_with("_tc_"):
+				node.remove_meta(meta_name)
+				changed = true
+
+		# Clean children recursively
+		var children := node.get_children()
+		for child in children:
+			var child_name := child.name
+			# Remove any editor preview visual nodes if they accidentally got persisted
+			if child_name.begins_with("TC_RemoteOutline_") or child_name.begins_with("RemoteCursor_") or child.has_meta("team_create_outline_peer"):
+				node.remove_child(child)
+				child.free()
+				changed = true
+				continue
+			if _strip_team_create_from_node(child):
+				changed = true
+
+		return changed
