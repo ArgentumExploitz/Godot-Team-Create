@@ -14,9 +14,7 @@ var host_btn: Button
 var join_btn: Button
 var disconnect_btn: Button
 
-var push_scene_btn: Button
 var sync_settings_btn: Button
-var sync_files_btn: Button
 var update_btn: Button
 
 var export_btn: Button
@@ -42,7 +40,7 @@ func _notification(what: int) -> void:
 		_apply_theme_overrides()
 
 func _init() -> void:
-	name = "Sync Dashboard"
+	name = "Team Create"
 	_build_ui()
 
 func _apply_theme_overrides() -> void:
@@ -242,20 +240,12 @@ func _build_ui() -> void:
 	sync_status_style.corner_radius_bottom_right = 6
 
 	sync_status_btn = Button.new()
-	sync_status_btn.text = "✓ Up to date!"
-	sync_status_btn.add_theme_color_override("font_color", Color.LIGHT_GREEN)
+	sync_status_btn.text = "Not connected"
+	sync_status_btn.add_theme_color_override("font_color", Color.GRAY)
 	sync_status_btn.add_theme_stylebox_override("normal", sync_status_style)
 	sync_status_btn.add_theme_stylebox_override("disabled", sync_status_style)
 	sync_status_btn.disabled = true
 	sync_vbox.add_child(sync_status_btn)
-
-	push_scene_btn = Button.new()
-	push_scene_btn.text = "Push Current Scene"
-	push_scene_btn.tooltip_text = "(Server only) Force push your currently active scene to all clients."
-	push_scene_btn.disabled = true
-	push_scene_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	push_scene_btn.pressed.connect(_on_push_scene_pressed)
-	sync_vbox.add_child(push_scene_btn)
 
 	sync_settings_btn = Button.new()
 	sync_settings_btn.text = "Sync Project Settings"
@@ -264,16 +254,6 @@ func _build_ui() -> void:
 	sync_settings_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	sync_settings_btn.pressed.connect(_on_sync_settings_pressed)
 	sync_vbox.add_child(sync_settings_btn)
-
-	sync_files_btn = Button.new()
-	sync_files_btn.text = "Sync All Project Files"
-	sync_files_btn.tooltip_text = "Compare and sync all project files across the network."
-	sync_files_btn.disabled = true
-	sync_status_btn.text = "Not connected"
-	sync_status_btn.add_theme_color_override("font_color", Color.GRAY)
-	sync_files_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	sync_files_btn.pressed.connect(_on_sync_files_pressed)
-	sync_vbox.add_child(sync_files_btn)
 
 	export_btn = Button.new()
 	export_btn.text = "Export Headless Server"
@@ -329,9 +309,7 @@ func set_connected(is_host: bool, connected_to_standalone: bool = false) -> void
 	host_btn.disabled = true
 	join_btn.disabled = true
 	disconnect_btn.disabled = false
-	push_scene_btn.disabled = false
 	sync_settings_btn.disabled = false
-	sync_files_btn.disabled = false
 	backup_scene_btn.disabled = false
 	sync_status_btn.text = "✓ Up to date!"
 	sync_status_btn.add_theme_color_override("font_color", Color.LIGHT_GREEN)
@@ -352,9 +330,7 @@ func set_disconnected() -> void:
 	host_btn.disabled = false
 	join_btn.disabled = false
 	disconnect_btn.disabled = true
-	push_scene_btn.disabled = true
 	sync_settings_btn.disabled = true
-	sync_files_btn.disabled = true
 	backup_scene_btn.disabled = true
 	sync_status_btn.text = "Not connected"
 	sync_status_btn.add_theme_color_override("font_color", Color.GRAY)
@@ -426,17 +402,9 @@ func _on_disconnect_pressed() -> void:
 	if network:
 		network.disconnect_peer()
 
-func _on_push_scene_pressed() -> void:
-	if network:
-		network.push_current_scene()
-
 func _on_sync_settings_pressed() -> void:
 	if network:
 		network.sync_project_settings()
-
-func _on_sync_files_pressed() -> void:
-	if network:
-		network.sync_all_files()
 
 func _on_backup_scene_pressed() -> void:
 	if network:
