@@ -556,6 +556,9 @@ func _process_pending_resource_properties():
 				_pending_resource_properties.remove_at(i)
 
 func _track_active_scene():
+	if _is_reloading_scene:
+		return
+
 	var current_scene = _get_edited_scene_root()
 	if not current_scene or not is_instance_valid(current_scene):
 		if _last_scene_path != "":
@@ -592,9 +595,9 @@ func _track_active_scene():
 
 		_index_scene_subresources(current_scene)
 		_defer_restore_camera(cur_path)
-		if network and network.is_connected_to_session():
+		if network and network.is_connected_to_session() and not network.is_server:
 			network.report_current_scene(cur_path, _user_scene_cameras.get(cur_path, {}))
-			rpc("request_scene_state", cur_path)
+			rpc_id(1, "request_scene_state", cur_path)
 			if _pending_offline_merges.has(cur_path):
 				get_tree().create_timer(0.5).timeout.connect(func():
 					apply_offline_merge_deferred(cur_path)
@@ -1847,6 +1850,7 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 							DirAccess.rename_absolute(path + ".tmp", path)
 					_file_write_mutex.unlock()
 				_is_reloading_scene = true
+				_last_scene_path = path
 				_force_full_sync_next_frame = true
 
 				editor.reload_scene_from_path(path)
@@ -1858,6 +1862,7 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 
 				get_tree().create_timer(0.5).timeout.connect(func():
 					_is_reloading_scene = false
+					_last_scene_path = path
 					if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
 						apply_offline_merge_deferred(path, merge_data)
 				)
@@ -1974,6 +1979,20 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 	bytes = full_bytes
 
 	if bytes.size() > 0:
+		var current_disk_bytes = PackedByteArray()
+		if FileAccess.file_exists(path):
+			current_disk_bytes = FileAccess.get_file_as_bytes(path)
+		var is_identical = (current_disk_bytes.size() == bytes.size() and current_disk_bytes == bytes)
+
+		if is_identical:
+			if not (network and network.get("is_standalone_server")):
+				var editor = _get_editor_interface()
+				if editor:
+					var current_scene = editor.get_edited_scene_root()
+					if current_scene and current_scene.scene_file_path == path:
+						_last_scene_path = path
+						return
+
 		var merge_data = prepare_offline_scene_merge(path, bytes)
 
 		_file_write_mutex.lock()
@@ -2016,6 +2035,7 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 						save_current_camera_for_scene(path, true)
 						_save_camera_cache()
 						_is_reloading_scene = true
+						_last_scene_path = path
 						editor.reload_scene_from_path(path)
 						_defer_restore_camera(path)
 						var cur_reloaded = editor.get_edited_scene_root()
@@ -2023,6 +2043,7 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 							_index_scene_subresources(cur_reloaded)
 						get_tree().create_timer(0.5).timeout.connect(func():
 							_is_reloading_scene = false
+							_last_scene_path = path
 							if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
 								apply_offline_merge_deferred(path, merge_data)
 						)
