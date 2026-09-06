@@ -149,7 +149,7 @@ func _get_target_scene(scene_path: String) -> Node:
 					else:
 						_server_dummy_scenes.erase(scene_path)
 					get_tree().root.add_child(instance)
-					_index_scene_subresources(instance)
+					_fix_server_subresource_paths_and_reindex(instance, scene_path)
 					return instance
 
 			_failed_scene_loads[scene_path] = true
@@ -203,6 +203,7 @@ func _save_server_tracked_scenes():
 							if network.auto_save_prints_enabled:
 								network.tc_print("Server automatically saved tracked scene: ", path)
 					DirAccess.remove_absolute(temp_save_path)
+					_fix_server_subresource_paths_and_reindex(scene_node, path)
 
 			for data in outlines:
 				if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
@@ -530,7 +531,7 @@ func _process_pending_resource_properties():
 							node.set(pending.prop_name, res)
 					elif typeof(pending.value) == TYPE_DICTIONARY and pending.value.has("sub_resource_bytes"):
 						var subres_id = pending.value.get("sub_resource_id", "")
-						var existing_res = _get_cached_subresource(subres_id) if subres_id != "" else null
+						var existing_res = _get_cached_subresource(subres_id, pending.scene_path) if subres_id != "" else null
 						if existing_res:
 							var updated = _update_existing_subresource(existing_res, pending.value)
 							if updated:
@@ -540,13 +541,13 @@ func _process_pending_resource_properties():
 								var res = _import_sub_resource(pending.value)
 								if res:
 									if subres_id != "":
-										_register_subresource(res, subres_id)
+										_register_subresource(res, subres_id, pending.scene_path)
 									node.set(pending.prop_name, res)
 						else:
 							var res = _import_sub_resource(pending.value)
 							if res:
 								if subres_id != "":
-									_register_subresource(res, subres_id)
+									_register_subresource(res, subres_id, pending.scene_path)
 								node.set(pending.prop_name, res)
 					_is_applying_remote_update = false
 					mark_scene_dirty(pending.scene_path)
@@ -677,7 +678,7 @@ func _check_single_node_changes(node: Node):
 							val.connect("changed", _on_resource_changed.bind(id, p.name, val))
 
 						if force_res_update:
-							current_props[p.name] = export_sub_resource_dict(val)
+							current_props[p.name] = export_sub_resource_dict(val, _last_scene_path)
 						else:
 							current_props[p.name] = _last_tracked_properties[id][p.name]
 			else:
@@ -1095,7 +1096,7 @@ func _sync_all_node_properties(node: Node, id: String, scene_path: String = ""):
 							if not val.is_connected("changed", _on_resource_changed.bind(id, p.name, val)):
 								val.connect("changed", _on_resource_changed.bind(id, p.name, val))
 
-							current_props[p.name] = export_sub_resource_dict(val)
+							current_props[p.name] = export_sub_resource_dict(val, scene_path)
 				else:
 					current_props[p.name] = val
 
@@ -1485,7 +1486,7 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 
 				if is_ready:
 					var subres_id = value.get("sub_resource_id", "")
-					var existing_res = _get_cached_subresource(subres_id) if subres_id != "" else null
+					var existing_res = _get_cached_subresource(subres_id, scene_path) if subres_id != "" else null
 					if existing_res:
 						var updated = _update_existing_subresource(existing_res, value)
 						if updated:
@@ -1495,13 +1496,13 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 							var res = _import_sub_resource(value)
 							if res:
 								if subres_id != "":
-									_register_subresource(res, subres_id)
+									_register_subresource(res, subres_id, scene_path)
 								node.set(prop_name, res)
 					else:
 						var res = _import_sub_resource(value)
 						if res:
 							if subres_id != "":
-								_register_subresource(res, subres_id)
+								_register_subresource(res, subres_id, scene_path)
 							node.set(prop_name, res)
 				else:
 					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "sender_id": sender_id, "timeout": Time.get_ticks_msec() + 30000})
@@ -1695,18 +1696,7 @@ func _extract_node_properties_for_merge(node: Node) -> Dictionary:
 						if val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path:
 							current_props[p.name] = val.resource_path
 						else:
-							var temp_path = "user://tc_sync_export_" + str(val.get_instance_id()) + ".tres"
-							ResourceSaver.save(val, temp_path)
-							var bytes = PackedByteArray()
-							var text = ""
-							if FileAccess.file_exists(temp_path):
-								bytes = FileAccess.get_file_as_bytes(temp_path)
-								text = FileAccess.get_file_as_string(temp_path)
-								DirAccess.remove_absolute(temp_path)
-							var rpath = val.resource_path
-							if rpath.begins_with("user://"):
-								rpath = ""
-							current_props[p.name] = {"sub_resource_bytes": bytes, "sub_resource_text": text, "resource_path": rpath, "resource_instance_id": val.get_instance_id()}
+							current_props[p.name] = export_sub_resource_dict(val, node.scene_file_path if node.scene_file_path != "" else _last_scene_path)
 				else:
 					current_props[p.name] = val
 
@@ -1820,6 +1810,7 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 					else:
 						_server_dummy_scenes.erase(path)
 					get_tree().root.add_child(instance)
+					_fix_server_subresource_paths_and_reindex(instance, path)
 			return
 		else:
 			var editor = _get_editor_interface()
@@ -2026,7 +2017,7 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 						else:
 							_server_dummy_scenes.erase(path)
 						get_tree().root.add_child(instance)
-						_index_scene_subresources(instance)
+						_fix_server_subresource_paths_and_reindex(instance, path)
 			else:
 				var editor = _get_editor_interface()
 				if editor:
@@ -2490,6 +2481,11 @@ func _import_sub_resource(value: Dictionary) -> Resource:
 			res.take_over_path(path)
 		else:
 			res.resource_path = ""
+		var u_id = value.get("scene_unique_id", "")
+		if u_id == "":
+			u_id = _clean_unique_id(value.get("sub_resource_id", ""))
+		if u_id != "":
+			res.set_scene_unique_id(u_id)
 		return res
 	return null
 
@@ -2508,40 +2504,150 @@ func _on_resource_changed(target, prop_name: String, res: Resource):
 	if _last_tracked_properties.has(id) and _last_tracked_properties[id].has(prop_name):
 		_last_tracked_properties[id].erase(prop_name)
 
-func _get_or_create_subresource_id(res: Resource) -> String:
+func _clean_scene_path(path: String) -> String:
+	if path == "":
+		return ""
+	var p = path
+	p = p.replace(".server_temp.tscn", ".tscn")
+	p = p.replace(".server_save.tscn", ".tscn")
+	if p.ends_with(".tmp"):
+		p = p.substr(0, p.length() - 4)
+	return p
+
+func _clean_unique_id(subres_id: String) -> String:
+	if subres_id == "":
+		return ""
+	if "::" in subres_id:
+		return subres_id.get_slice("::", 1)
+	return subres_id
+
+func _fix_server_subresource_paths_and_reindex(node: Node, clean_path: String):
+	if not is_instance_valid(node):
+		return
+	var c_path = _clean_scene_path(clean_path)
+	var visited = {}
+	_fix_subresource_paths_recursive(node, c_path, visited)
+	_index_scene_subresources(node, c_path)
+
+func _fix_subresource_paths_recursive(obj: Object, clean_path: String, visited: Dictionary):
+	if not is_instance_valid(obj):
+		return
+	var obj_id = obj.get_instance_id()
+	if visited.has(obj_id):
+		return
+	visited[obj_id] = true
+
+	var props = obj.get_property_list()
+	for p in props:
+		if (p.usage & PROPERTY_USAGE_STORAGE) or (p.usage & PROPERTY_USAGE_EDITOR):
+			if p.name.begins_with("metadata/"):
+				continue
+			var val = obj.get(p.name)
+			if val is Resource:
+				if not (val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path):
+					var u_id = val.get_scene_unique_id()
+					if u_id == "" and "::" in val.resource_path:
+						u_id = _clean_unique_id(val.resource_path)
+					if u_id == "":
+						u_id = val.get_class() + "_" + Resource.generate_scene_unique_id()
+					val.set_scene_unique_id(u_id)
+					var target_path = clean_path + "::" + u_id
+					if val.resource_path != target_path:
+						val.take_over_path(target_path)
+					_fix_subresource_paths_recursive(val, clean_path, visited)
+
+	if obj is Node:
+		for child in obj.get_children():
+			_fix_subresource_paths_recursive(child, clean_path, visited)
+
+func _get_or_create_subresource_id(res: Resource, scene_path: String = "") -> String:
 	if not res:
 		return ""
 	var inst_id = res.get_instance_id()
 	if _resource_to_subres_id.has(inst_id):
-		return _resource_to_subres_id[inst_id]
+		var existing_id = _resource_to_subres_id[inst_id]
+		if not _subres_id_to_resource.has(existing_id):
+			_subres_id_to_resource[existing_id] = weakref(res)
+		var u = _clean_unique_id(existing_id)
+		if u != "" and not _subres_id_to_resource.has(u):
+			_subres_id_to_resource[u] = weakref(res)
+		return existing_id
 
-	var sub_id = ""
+	var unique_id = ""
 	if res.resource_path != "" and "::" in res.resource_path:
-		sub_id = res.resource_path
+		unique_id = _clean_unique_id(res.resource_path)
+	elif res.get_scene_unique_id() != "":
+		unique_id = res.get_scene_unique_id()
 	else:
-		sub_id = str(ResourceUID.create_id())
+		unique_id = res.get_class() + "_" + Resource.generate_scene_unique_id()
+		res.set_scene_unique_id(unique_id)
+
+	var effective_scene = scene_path
+	if effective_scene == "" and res.resource_path != "" and "::" in res.resource_path:
+		effective_scene = _clean_scene_path(res.resource_path.get_slice("::", 0))
+	if effective_scene == "":
+		effective_scene = _last_scene_path
+	effective_scene = _clean_scene_path(effective_scene)
+
+	var sub_id = (effective_scene + "::" + unique_id) if effective_scene != "" else unique_id
 
 	_resource_to_subres_id[inst_id] = sub_id
 	_subres_id_to_resource[sub_id] = weakref(res)
+	if unique_id != "":
+		_subres_id_to_resource[unique_id] = weakref(res)
 	return sub_id
 
-func _register_subresource(res: Resource, subres_id: String):
+func _register_subresource(res: Resource, subres_id: String, scene_path: String = ""):
 	if not res or subres_id == "":
 		return
 	var inst_id = res.get_instance_id()
-	_resource_to_subres_id[inst_id] = subres_id
-	_subres_id_to_resource[subres_id] = weakref(res)
+	var u_id = _clean_unique_id(subres_id)
+	if u_id != "":
+		res.set_scene_unique_id(u_id)
 
-func _get_cached_subresource(subres_id: String) -> Resource:
+	var effective_scene = scene_path
+	if effective_scene == "" and "::" in subres_id:
+		effective_scene = _clean_scene_path(subres_id.get_slice("::", 0))
+	if effective_scene == "":
+		effective_scene = _last_scene_path
+	effective_scene = _clean_scene_path(effective_scene)
+
+	var canonical_id = (effective_scene + "::" + u_id) if (effective_scene != "" and u_id != "") else subres_id
+
+	_resource_to_subres_id[inst_id] = canonical_id
+	_subres_id_to_resource[canonical_id] = weakref(res)
+	_subres_id_to_resource[subres_id] = weakref(res)
+	if u_id != "":
+		_subres_id_to_resource[u_id] = weakref(res)
+
+func _get_cached_subresource(subres_id: String, scene_path: String = "") -> Resource:
 	if subres_id == "":
 		return null
-	if _subres_id_to_resource.has(subres_id):
-		var wr = _subres_id_to_resource[subres_id]
-		if wr is WeakRef:
-			var ref = wr.get_ref()
-			if is_instance_valid(ref) and ref is Resource:
-				return ref
-		_subres_id_to_resource.erase(subres_id)
+
+	var candidates = []
+	candidates.append(subres_id)
+
+	var u_id = _clean_unique_id(subres_id)
+	var scn = scene_path
+	if scn == "" and "::" in subres_id:
+		scn = _clean_scene_path(subres_id.get_slice("::", 0))
+	if scn == "":
+		scn = _last_scene_path
+	scn = _clean_scene_path(scn)
+
+	if scn != "" and u_id != "":
+		candidates.append(scn + "::" + u_id)
+	if u_id != "" and not candidates.has(u_id):
+		candidates.append(u_id)
+
+	for key in candidates:
+		if _subres_id_to_resource.has(key):
+			var wr = _subres_id_to_resource[key]
+			if wr is WeakRef:
+				var ref = wr.get_ref()
+				if is_instance_valid(ref) and ref is Resource:
+					return ref
+			_subres_id_to_resource.erase(key)
 	return null
 
 func _update_existing_subresource(existing_res: Resource, value: Dictionary) -> bool:
@@ -2552,6 +2658,13 @@ func _update_existing_subresource(existing_res: Resource, value: Dictionary) -> 
 		return false
 	if temp_res.get_class() != existing_res.get_class():
 		return false
+
+	var sub_id = value.get("sub_resource_id", "")
+	var u_id = value.get("scene_unique_id", "")
+	if u_id == "":
+		u_id = _clean_unique_id(sub_id)
+	if u_id != "":
+		existing_res.set_scene_unique_id(u_id)
 
 	for p in temp_res.get_property_list():
 		if (p.usage & PROPERTY_USAGE_STORAGE) or (p.usage & PROPERTY_USAGE_EDITOR):
@@ -2565,25 +2678,49 @@ func _update_existing_subresource(existing_res: Resource, value: Dictionary) -> 
 	existing_res.emit_changed()
 	return true
 
-func _index_scene_subresources(node):
+func _index_scene_subresources(node, scene_path: String = ""):
 	if not is_instance_valid(node) or not (node is Node):
 		return
-	var props = node.get_property_list()
+	var scn = scene_path
+	if scn == "":
+		if node.scene_file_path != "":
+			scn = node.scene_file_path
+		elif node.has_meta("scene_file_path"):
+			scn = node.get_meta("scene_file_path")
+		else:
+			scn = _last_scene_path
+	scn = _clean_scene_path(scn)
+
+	var visited = {}
+	_index_object_resources_recursive(node, scn, visited)
+
+func _index_object_resources_recursive(obj: Object, scene_path: String, visited: Dictionary):
+	if not is_instance_valid(obj):
+		return
+	var obj_id = obj.get_instance_id()
+	if visited.has(obj_id):
+		return
+	visited[obj_id] = true
+
+	var props = obj.get_property_list()
 	for p in props:
 		if (p.usage & PROPERTY_USAGE_STORAGE) or (p.usage & PROPERTY_USAGE_EDITOR):
 			if p.name.begins_with("metadata/"):
 				continue
-			var val = node.get(p.name)
+			var val = obj.get(p.name)
 			if val is Resource:
 				if not (val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path):
-					_get_or_create_subresource_id(val)
-	for child in node.get_children():
-		_index_scene_subresources(child)
+					_get_or_create_subresource_id(val, scene_path)
+					_index_object_resources_recursive(val, scene_path, visited)
 
-func export_sub_resource_dict(res: Resource) -> Dictionary:
+	if obj is Node:
+		for child in obj.get_children():
+			_index_object_resources_recursive(child, scene_path, visited)
+
+func export_sub_resource_dict(res: Resource, scene_path: String = "") -> Dictionary:
 	if not res:
 		return {}
-	var subres_id = _get_or_create_subresource_id(res)
+	var subres_id = _get_or_create_subresource_id(res, scene_path)
 	var temp_path = "user://tc_sync_export_" + str(res.get_instance_id()) + ".tres"
 	ResourceSaver.save(res, temp_path)
 	var bytes = PackedByteArray()
@@ -2595,12 +2732,16 @@ func export_sub_resource_dict(res: Resource) -> Dictionary:
 	var rpath = res.resource_path
 	if rpath.begins_with("user://"):
 		rpath = ""
+	var u_id = res.get_scene_unique_id()
+	if u_id == "":
+		u_id = _clean_unique_id(subres_id)
 	return {
 		"sub_resource_bytes": bytes,
 		"sub_resource_text": text,
 		"resource_path": rpath,
 		"resource_instance_id": res.get_instance_id(),
-		"sub_resource_id": subres_id
+		"sub_resource_id": subres_id,
+		"scene_unique_id": u_id
 	}
 
 # ==============================================================================
