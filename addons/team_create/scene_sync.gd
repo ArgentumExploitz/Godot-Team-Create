@@ -90,7 +90,7 @@ func _safe_load_headless(path: String) -> Dictionary:
 		if scene_match:
 			text = text.replace(scene_match.get_string(1), "")
 
-	var temp_path = path + ".server_temp.tscn"
+	var temp_path = "user://tc_headless_load_" + str(Time.get_ticks_msec()) + "_" + str(randi() % 10000) + ".tscn"
 	var temp_file = FileAccess.open(temp_path, FileAccess.WRITE)
 	if temp_file:
 		temp_file.store_string(text)
@@ -149,7 +149,7 @@ func _get_target_scene(scene_path: String) -> Node:
 					else:
 						_server_dummy_scenes.erase(scene_path)
 					get_tree().root.add_child(instance)
-					_fix_server_subresource_paths_and_reindex(instance, scene_path)
+					_index_scene_subresources(instance, scene_path)
 					return instance
 
 			_failed_scene_loads[scene_path] = true
@@ -187,23 +187,13 @@ func _save_server_tracked_scenes():
 
 			var packed = PackedScene.new()
 			if packed.pack(scene_node) == OK:
-				var temp_save_path = path + ".server_save.tscn"
-				if ResourceSaver.save(packed, temp_save_path) == OK:
-					network._restore_dummy_paths_in_file(temp_save_path)
-					var f = FileAccess.open(temp_save_path, FileAccess.READ)
-					if f:
-						var t_text = f.get_as_text()
-						f.close()
-						var final_f = FileAccess.open(path, FileAccess.WRITE)
-						if final_f:
-							final_f.store_string(t_text)
-							final_f.close()
-							if network and network.file_sync:
-								network.file_sync._file_hash_cache.erase(path)
-							if network.auto_save_prints_enabled:
-								network.tc_print("Server automatically saved tracked scene: ", path)
-					DirAccess.remove_absolute(temp_save_path)
-					_fix_server_subresource_paths_and_reindex(scene_node, path)
+				if ResourceSaver.save(packed, path) == OK:
+					network._restore_dummy_paths_in_file(path)
+					if network and network.file_sync:
+						network.file_sync._file_hash_cache.erase(path)
+					if network.auto_save_prints_enabled:
+						network.tc_print("Server automatically saved tracked scene: ", path)
+				_index_scene_subresources(scene_node, path)
 
 			for data in outlines:
 				if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
@@ -656,9 +646,11 @@ func _check_single_node_changes(node: Node):
 			if typeof(val) == TYPE_OBJECT:
 				# For resources like Mesh or Material, sync the resource path if possible
 				if val is Resource:
-					if val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path:
-						# ONLY send the string path over the network
-						current_props[p.name] = val.resource_path
+					if not _is_built_in_subresource(val):
+						var r_path = val.resource_path
+						if network and network.get("_dummy_path_to_original") and network._dummy_path_to_original.has(r_path):
+							r_path = network._dummy_path_to_original[r_path]
+						current_props[p.name] = r_path
 					else:
 						# Serialize local sub-resources or resources without a file path
 						# Only serialize if it has changed
@@ -1090,8 +1082,11 @@ func _sync_all_node_properties(node: Node, id: String, scene_path: String = ""):
 			if is_different:
 				if typeof(val) == TYPE_OBJECT:
 					if val is Resource:
-						if val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path:
-							current_props[p.name] = val.resource_path
+						if not _is_built_in_subresource(val):
+							var r_path = val.resource_path
+							if network and network.get("_dummy_path_to_original") and network._dummy_path_to_original.has(r_path):
+								r_path = network._dummy_path_to_original[r_path]
+							current_props[p.name] = r_path
 						else:
 							if not val.is_connected("changed", _on_resource_changed.bind(id, p.name, val)):
 								val.connect("changed", _on_resource_changed.bind(id, p.name, val))
@@ -1693,8 +1688,11 @@ func _extract_node_properties_for_merge(node: Node) -> Dictionary:
 			if is_different:
 				if typeof(val) == TYPE_OBJECT:
 					if val is Resource:
-						if val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path:
-							current_props[p.name] = val.resource_path
+						if not _is_built_in_subresource(val):
+							var r_path = val.resource_path
+							if network and network.get("_dummy_path_to_original") and network._dummy_path_to_original.has(r_path):
+								r_path = network._dummy_path_to_original[r_path]
+							current_props[p.name] = r_path
 						else:
 							current_props[p.name] = export_sub_resource_dict(val, node.scene_file_path if node.scene_file_path != "" else _last_scene_path)
 				else:
@@ -1810,7 +1808,7 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 					else:
 						_server_dummy_scenes.erase(path)
 					get_tree().root.add_child(instance)
-					_fix_server_subresource_paths_and_reindex(instance, path)
+					_index_scene_subresources(instance, path)
 			return
 		else:
 			var editor = _get_editor_interface()
@@ -2017,7 +2015,7 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 						else:
 							_server_dummy_scenes.erase(path)
 						get_tree().root.add_child(instance)
-						_fix_server_subresource_paths_and_reindex(instance, path)
+						_index_scene_subresources(instance, path)
 			else:
 				var editor = _get_editor_interface()
 				if editor:
@@ -2521,47 +2519,20 @@ func _clean_unique_id(subres_id: String) -> String:
 		return subres_id.get_slice("::", 1)
 	return subres_id
 
-func _fix_server_subresource_paths_and_reindex(node: Node, clean_path: String):
-	if not is_instance_valid(node):
-		return
-	var c_path = _clean_scene_path(clean_path)
-	var visited = {}
-	_fix_subresource_paths_recursive(node, c_path, visited)
-	_index_scene_subresources(node, c_path)
-
-func _fix_subresource_paths_recursive(obj: Object, clean_path: String, visited: Dictionary):
-	if not is_instance_valid(obj):
-		return
-	var obj_id = obj.get_instance_id()
-	if visited.has(obj_id):
-		return
-	visited[obj_id] = true
-
-	var props = obj.get_property_list()
-	for p in props:
-		if (p.usage & PROPERTY_USAGE_STORAGE) or (p.usage & PROPERTY_USAGE_EDITOR):
-			if p.name.begins_with("metadata/"):
-				continue
-			var val = obj.get(p.name)
-			if val is Resource:
-				if not (val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path):
-					var u_id = val.get_scene_unique_id()
-					if u_id == "" and "::" in val.resource_path:
-						u_id = _clean_unique_id(val.resource_path)
-					if u_id == "":
-						u_id = val.get_class() + "_" + Resource.generate_scene_unique_id()
-					val.set_scene_unique_id(u_id)
-					var target_path = clean_path + "::" + u_id
-					if val.resource_path != target_path:
-						val.take_over_path(target_path)
-					_fix_subresource_paths_recursive(val, clean_path, visited)
-
-	if obj is Node:
-		for child in obj.get_children():
-			_fix_subresource_paths_recursive(child, clean_path, visited)
+func _is_built_in_subresource(res: Resource) -> bool:
+	if not res:
+		return false
+	var p = res.resource_path
+	if p.begins_with("user://tc_dummy_"):
+		return false
+	if network and network.get("_dummy_path_to_original") and network._dummy_path_to_original.has(p):
+		return false
+	if p != "" and p.begins_with("res://") and not "::" in p:
+		return false
+	return true
 
 func _get_or_create_subresource_id(res: Resource, scene_path: String = "") -> String:
-	if not res:
+	if not res or not _is_built_in_subresource(res):
 		return ""
 	var inst_id = res.get_instance_id()
 	if _resource_to_subres_id.has(inst_id):
@@ -2598,7 +2569,7 @@ func _get_or_create_subresource_id(res: Resource, scene_path: String = "") -> St
 	return sub_id
 
 func _register_subresource(res: Resource, subres_id: String, scene_path: String = ""):
-	if not res or subres_id == "":
+	if not res or subres_id == "" or not _is_built_in_subresource(res):
 		return
 	var inst_id = res.get_instance_id()
 	var u_id = _clean_unique_id(subres_id)
@@ -2709,7 +2680,7 @@ func _index_object_resources_recursive(obj: Object, scene_path: String, visited:
 				continue
 			var val = obj.get(p.name)
 			if val is Resource:
-				if not (val.resource_path != "" and val.resource_path.begins_with("res://") and not "::" in val.resource_path):
+				if _is_built_in_subresource(val):
 					_get_or_create_subresource_id(val, scene_path)
 					_index_object_resources_recursive(val, scene_path, visited)
 
@@ -2729,6 +2700,10 @@ func export_sub_resource_dict(res: Resource, scene_path: String = "") -> Diction
 		bytes = FileAccess.get_file_as_bytes(temp_path)
 		text = FileAccess.get_file_as_string(temp_path)
 		DirAccess.remove_absolute(temp_path)
+		if network and network.get("_dummy_path_to_original"):
+			for dummy_p in network._dummy_path_to_original:
+				if text.contains(dummy_p):
+					text = text.replace(dummy_p, network._dummy_path_to_original[dummy_p])
 	var rpath = res.resource_path
 	if rpath.begins_with("user://"):
 		rpath = ""
