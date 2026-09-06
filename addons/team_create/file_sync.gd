@@ -309,7 +309,7 @@ func request_asset_package(path: String):
 @rpc("any_peer", "reliable")
 func deliver_asset_package(path: String, asset_bytes: PackedByteArray, import_bytes: PackedByteArray):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
-	if network and not network.is_server and sender_id != 1:
+	if network and not network.is_server and sender_id != 1 and sender_id != 0:
 		return
 	if not _is_safe_path(path):
 		return
@@ -361,6 +361,19 @@ func _show_sync_blocker():
 		_sync_blocker.add_child(label)
 
 		base.add_child(_sync_blocker)
+
+		# Failsafe timer: automatically dismiss blocker if stuck for more than 15 seconds
+		var blocker_ref = weakref(_sync_blocker)
+		get_tree().create_timer(15.0).timeout.connect(func():
+			var b = blocker_ref.get_ref()
+			if b and is_instance_valid(b):
+				printerr("Team Create: Sync blocker timed out waiting for files, dismissing.")
+				_hide_sync_blocker()
+				downloading_files.clear()
+				_pending_files_to_receive = 0
+				_known_files = get_all_files("res://")
+				sync_completed.emit()
+		)
 
 func _update_sync_blocker():
 	if _sync_blocker:
@@ -552,7 +565,7 @@ func receive_project_settings(bytes: PackedByteArray):
 @rpc("any_peer", "reliable")
 func compare_and_sync_files(peer_hashes: Dictionary):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
-	if network and not network.is_server and sender_id != 1:
+	if network and not network.is_server and sender_id != 1 and sender_id != 0:
 		return # Clients strictly sync from the authoritative server (peer 1)
 
 	_is_syncing_files = true
@@ -748,10 +761,18 @@ func request_file(path: String):
 @rpc("any_peer", "reliable")
 func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_final: bool = true):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
-	if network and not network.is_server and sender_id != 1:
+	if network and not network.is_server and sender_id != 1 and sender_id != 0:
 		return # Clients only accept files delivered by the server
 	if not _is_safe_path(path):
 		printerr("Team Create: Unauthorized or invalid file path received: ", path)
+		downloading_files.erase(path)
+		if _pending_files_to_receive > 0:
+			_pending_files_to_receive -= 1
+			call_deferred("_update_sync_blocker")
+			if _pending_files_to_receive <= 0:
+				call_deferred("_hide_sync_blocker")
+				_known_files = get_all_files("res://")
+				sync_completed.emit()
 		return
 
 	var file_key = str(sender_id) + "_" + str(transfer_id) + "_" + path
@@ -923,7 +944,7 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 func remote_delete_file(path: String):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 1
 	var is_srv = network and network.is_server
-	if not is_srv and sender_id != 1:
+	if not is_srv and sender_id != 1 and sender_id != 0:
 		return # Clients only accept file deletions from the server
 
 	if not _is_safe_path(path):
