@@ -199,6 +199,7 @@ func _save_server_tracked_scenes():
 				if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
 					data["parent"].add_child(data["node"])
 
+var _synced_scene_states: Dictionary = {}
 var _dirty_scenes: Dictionary = {}
 var _dirty_save_cooldown: float = 0.0
 const DIRTY_SAVE_DELAY: float = 5.0
@@ -303,6 +304,7 @@ var _tab_switch_cooldown: float = 0.0
 # Shared Sub-Resource Tracking (ensures duplicated nodes sharing meshes/materials remain shared across peers and server saves)
 var _resource_to_subres_id: Dictionary = {}
 var _subres_id_to_resource: Dictionary = {}
+var _dirty_subresources: Dictionary = {}
 
 # Tracking structure changes locally so we don't bounce events back and forth
 var _ignore_next_structure_event = false
@@ -315,6 +317,7 @@ var _pending_resource_properties = []
 var _receiving_scenes: Dictionary = {}
 var _receiving_scene_states: Dictionary = {}
 var _receiving_properties: Dictionary = {}
+var _is_forwarding_chunked_property: bool = false
 
 func _ready():
 	_load_camera_cache()
@@ -337,6 +340,19 @@ func _setup_file_sync_signals():
 	if network and network.file_sync:
 		if network.file_sync.has_signal("asset_imported") and not network.file_sync.asset_imported.is_connected(_on_asset_imported):
 			network.file_sync.asset_imported.connect(_on_asset_imported)
+	var ei = _get_editor_interface()
+	if ei and ei.get_resource_filesystem():
+		var efs = ei.get_resource_filesystem()
+		if efs.has_signal("resources_reimported") and not efs.resources_reimported.is_connected(_on_resources_reimported):
+			efs.resources_reimported.connect(_on_resources_reimported)
+		if efs.has_signal("filesystem_changed") and not efs.filesystem_changed.is_connected(_on_filesystem_changed_scene_sync):
+			efs.filesystem_changed.connect(_on_filesystem_changed_scene_sync)
+
+func _on_resources_reimported(resources: PackedStringArray):
+	_process_pending_resource_properties()
+
+func _on_filesystem_changed_scene_sync():
+	_process_pending_resource_properties()
 
 func _on_asset_imported(path: String):
 	_process_pending_resource_properties()
@@ -370,9 +386,18 @@ func _connect_tree_exiting_recursive(node: Node):
 		_connect_tree_exiting_recursive(child)
 
 func _on_node_tree_exiting(node: Node):
+	if _is_reloading_scene:
+		return
+
 	var edited_scene = _get_edited_scene_root()
+	if not edited_scene:
+		return
+
+	if node == edited_scene:
+		return
+
 	var current_scene = _get_target_scene("")
-	if edited_scene and (node == edited_scene or current_scene != edited_scene):
+	if current_scene != edited_scene:
 		return
 
 	if network and network.is_connected_to_session() and not _get_connected_peers().is_empty():
@@ -384,9 +409,7 @@ func _on_node_tree_exiting(node: Node):
 		elif current_scene:
 			scene_path = current_scene.scene_file_path
 
-		var root_node = node.owner if node.owner else current_scene
-		if node == current_scene:
-			root_node = node
+		var root_node = node.owner if node.owner else edited_scene
 
 		_pre_removal_paths[node.get_instance_id()] = {"id": network.assign_unique_id(node), "scene_path": scene_path, "root_node": root_node}
 
@@ -522,25 +545,41 @@ func _process_pending_resource_properties():
 					elif typeof(pending.value) == TYPE_DICTIONARY and pending.value.has("sub_resource_bytes"):
 						var subres_id = pending.value.get("sub_resource_id", "")
 						var existing_res = _get_cached_subresource(subres_id, pending.scene_path) if subres_id != "" else null
+						var applied_res: Resource = null
 						if existing_res:
 							var updated = _update_existing_subresource(existing_res, pending.value)
 							if updated:
 								if node.get(pending.prop_name) != existing_res:
 									node.set(pending.prop_name, existing_res)
+								applied_res = existing_res
 							else:
 								var res = _import_sub_resource(pending.value)
 								if res:
 									if subres_id != "":
 										_register_subresource(res, subres_id, pending.scene_path)
 									node.set(pending.prop_name, res)
+									applied_res = res
 						else:
 							var res = _import_sub_resource(pending.value)
 							if res:
 								if subres_id != "":
 									_register_subresource(res, subres_id, pending.scene_path)
 								node.set(pending.prop_name, res)
-					_is_applying_remote_update = false
-					mark_scene_dirty(pending.scene_path)
+								applied_res = res
+						_is_applying_remote_update = false
+						mark_scene_dirty(pending.scene_path)
+
+						if not _last_tracked_properties.has(pending.id):
+							_last_tracked_properties[pending.id] = {}
+						_dirty_subresources.erase(pending.id + ":" + pending.prop_name)
+						var stored_dict = pending.value.duplicate()
+						if applied_res:
+							stored_dict["resource_instance_id"] = applied_res.get_instance_id()
+							_register_subresource_listener(applied_res, pending.id, pending.prop_name)
+						_last_tracked_properties[pending.id][pending.prop_name] = stored_dict
+					else:
+						_is_applying_remote_update = false
+						mark_scene_dirty(pending.scene_path)
 			_pending_resource_properties.remove_at(i)
 		else:
 			if Time.get_ticks_msec() > pending.timeout:
@@ -552,7 +591,9 @@ func _track_active_scene():
 
 	var current_scene = _get_edited_scene_root()
 	if not current_scene or not is_instance_valid(current_scene):
-		if _last_scene_path != "":
+		var editor = _get_editor_interface()
+		var open_scenes = editor.get_open_scenes() if editor else PackedStringArray()
+		if open_scenes.is_empty() and _last_scene_path != "":
 			save_current_camera_for_scene(_last_scene_path, true)
 			_save_camera_cache()
 			_last_scene_path = ""
@@ -561,11 +602,6 @@ func _track_active_scene():
 
 	var cur_path = current_scene.scene_file_path
 	if cur_path == "":
-		if _last_scene_path != "":
-			save_current_camera_for_scene(_last_scene_path, true)
-			_save_camera_cache()
-			_last_scene_path = ""
-			_local_3d_cursor_pos = Transform3D()
 		return
 
 	if cur_path != _last_scene_path:
@@ -575,6 +611,7 @@ func _track_active_scene():
 
 		_last_scene_path = cur_path
 		_last_tracked_properties.clear()
+		_dirty_subresources.clear()
 		_pending_selection_nodes.clear()
 		_pending_selection_index = 0
 		_node_names[current_scene.get_instance_id()] = current_scene.name
@@ -587,8 +624,11 @@ func _track_active_scene():
 		_index_scene_subresources(current_scene)
 		_defer_restore_camera(cur_path)
 		if network and network.is_connected_to_session() and not network.is_server:
-			network.report_current_scene(cur_path, _user_scene_cameras.get(cur_path, {}))
-			rpc_id(1, "request_scene_state", cur_path)
+			if multiplayer and multiplayer.get_unique_id() != 1:
+				network.report_current_scene(cur_path, _user_scene_cameras.get(cur_path, {}))
+				if not _synced_scene_states.has(cur_path):
+					_synced_scene_states[cur_path] = true
+					rpc_id(1, "request_scene_state", cur_path)
 			if _pending_offline_merges.has(cur_path):
 				get_tree().create_timer(0.5).timeout.connect(func():
 					apply_offline_merge_deferred(cur_path)
@@ -627,6 +667,26 @@ func _check_all_nodes(node: Node, scene_root: Node):
 	for child in node.get_children():
 		_check_all_nodes(child, scene_root)
 
+func _register_subresource_listener(val: Resource, id: String, prop_name: String):
+	if not is_instance_valid(val):
+		return
+	if not val.is_connected("changed", _on_resource_changed.bind(id, prop_name, val)):
+		val.connect("changed", _on_resource_changed.bind(id, prop_name, val))
+
+func _are_properties_equal(val_a, val_b) -> bool:
+	if typeof(val_a) != typeof(val_b):
+		return false
+	if typeof(val_a) == TYPE_DICTIONARY:
+		if val_a.has("sub_resource_bytes") and val_b.has("sub_resource_bytes"):
+			var bytes_a: PackedByteArray = val_a["sub_resource_bytes"]
+			var bytes_b: PackedByteArray = val_b["sub_resource_bytes"]
+			if bytes_a.is_empty() != bytes_b.is_empty():
+				return false
+			if not bytes_a.is_empty():
+				return bytes_a == bytes_b
+			return val_a.get("sub_resource_id") == val_b.get("sub_resource_id") and val_a.get("resource_instance_id") == val_b.get("resource_instance_id")
+	return val_a == val_b
+
 func _check_single_node_changes(node: Node):
 	if _is_applying_remote_update:
 		return
@@ -652,27 +712,37 @@ func _check_single_node_changes(node: Node):
 							r_path = network._dummy_path_to_original[r_path]
 						current_props[p.name] = r_path
 					else:
-						# Serialize local sub-resources or resources without a file path
-						# Only serialize if it has changed
+						var dirty_key = id + ":" + p.name
 						var force_res_update = false
-						if _last_tracked_properties.has(id) and _last_tracked_properties[id].has(p.name):
+
+						if not _last_tracked_properties.has(id) or not _last_tracked_properties[id].has(p.name):
+							_register_subresource_listener(val, id, p.name)
+							var subres_id = _get_or_create_subresource_id(val, _last_scene_path)
+							current_props[p.name] = {
+								"resource_instance_id": val.get_instance_id(),
+								"sub_resource_id": subres_id,
+								"sub_resource_bytes": PackedByteArray()
+							}
+						else:
 							var last_val = _last_tracked_properties[id][p.name]
-							if typeof(last_val) == TYPE_DICTIONARY and last_val.has("resource_instance_id"):
-								if last_val["resource_instance_id"] != val.get_instance_id():
-									force_res_update = true
-							else:
+							var last_inst_id = last_val.get("resource_instance_id", 0) if typeof(last_val) == TYPE_DICTIONARY else 0
+							if last_inst_id != val.get_instance_id():
 								force_res_update = true
-						else:
-							force_res_update = true
+							elif _dirty_subresources.has(dirty_key):
+								_dirty_subresources.erase(dirty_key)
+								force_res_update = true
 
-						# Listen for native changed signal
-						if not val.is_connected("changed", _on_resource_changed.bind(id, p.name, val)):
-							val.connect("changed", _on_resource_changed.bind(id, p.name, val))
+							_register_subresource_listener(val, id, p.name)
 
-						if force_res_update:
-							current_props[p.name] = export_sub_resource_dict(val, _last_scene_path)
-						else:
-							current_props[p.name] = _last_tracked_properties[id][p.name]
+							if force_res_update:
+								var new_dict = export_sub_resource_dict(val, _last_scene_path)
+								var last_bytes = last_val.get("sub_resource_bytes", PackedByteArray()) if typeof(last_val) == TYPE_DICTIONARY else PackedByteArray()
+								if not last_bytes.is_empty() and last_bytes == new_dict.get("sub_resource_bytes", PackedByteArray()):
+									current_props[p.name] = last_val
+								else:
+									current_props[p.name] = new_dict
+							else:
+								current_props[p.name] = last_val
 			else:
 				current_props[p.name] = val
 
@@ -700,7 +770,7 @@ func _check_single_node_changes(node: Node):
 	else:
 		var last_props = _last_tracked_properties[id]
 		for prop_name in current_props:
-			if not last_props.has(prop_name) or typeof(last_props[prop_name]) != typeof(current_props[prop_name]) or last_props[prop_name] != current_props[prop_name]:
+			if not last_props.has(prop_name) or typeof(last_props[prop_name]) != typeof(current_props[prop_name]) or not _are_properties_equal(last_props[prop_name], current_props[prop_name]):
 				_send_update_node_property(id, prop_name, current_props[prop_name], _last_scene_path)
 				last_props[prop_name] = current_props[prop_name]
 
@@ -724,7 +794,7 @@ func _track_selection():
 				if network and network.is_connected_to_session():
 					if network.is_server:
 						release_node_lock(id, _last_scene_path)
-					else:
+					elif multiplayer and multiplayer.get_unique_id() != 1:
 						rpc_id(1, "release_node_lock", id, _last_scene_path)
 
 		var lock_count = 0
@@ -735,7 +805,7 @@ func _track_selection():
 				if network and network.is_connected_to_session():
 					if network.is_server:
 						request_node_lock(id, _last_scene_path)
-					else:
+					elif multiplayer and multiplayer.get_unique_id() != 1:
 						rpc_id(1, "request_node_lock", id, _last_scene_path)
 			lock_count += 1
 
@@ -875,41 +945,10 @@ func push_specific_scene_to_peer(scene_path: String, id: int):
 			push_current_scene_to_peer(id)
 			return
 
-	# This is called on the standalone server (or when editor scene is not the active tab).
-	# We pack the tracked scene or read from file.
-	if _server_tracked_scenes.has(scene_path):
-		var scene_node = _server_tracked_scenes[scene_path]
-		if is_instance_valid(scene_node):
-			# Temporarily remove outlines
-			var outlines = []
-			var tree = scene_node.get_tree() if scene_node.is_inside_tree() else null
-			if tree:
-				for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
-					if is_instance_valid(node) and node.is_ancestor_of(scene_node):
-						outlines.append({"node": node, "parent": node.get_parent()})
-				for node in tree.get_nodes_in_group("TeamCreateCursors"):
-					if is_instance_valid(node) and node.is_ancestor_of(scene_node):
-						outlines.append({"node": node, "parent": node.get_parent()})
+	if network and network.get("is_standalone_server"):
+		_save_server_tracked_scenes()
 
-			for data in outlines:
-				data["parent"].remove_child(data["node"])
-
-			var packed = PackedScene.new()
-			if packed.pack(scene_node) == OK:
-				var temp_path = "user://temp_scene_state_server_" + str(id) + ".tscn"
-				if ResourceSaver.save(packed, temp_path) == OK:
-					network._restore_dummy_paths_in_file(temp_path)
-					if FileAccess.file_exists(temp_path):
-						var bytes = FileAccess.get_file_as_bytes(temp_path)
-						_send_scene_bytes_to_peer(scene_path, bytes, id)
-					DirAccess.remove_absolute(temp_path)
-
-			for data in outlines:
-				if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
-					data["parent"].add_child(data["node"])
-			return
-
-	# Fallback to disk: flush dirty scenes to disk first so peer gets freshest state
+	# Flush to disk ensures peer gets exact authoritative scene file with UIDs intact
 	if FileAccess.file_exists(scene_path):
 		var bytes = FileAccess.get_file_as_bytes(scene_path)
 		_send_scene_bytes_to_peer(scene_path, bytes, id)
@@ -931,37 +970,19 @@ func push_current_scene_to_peer(id: int):
 		if current_scene:
 			var path = current_scene.scene_file_path
 			if path != "":
-				var outlines = []
-				var tree = current_scene.get_tree()
-				if tree:
-					for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
-						if is_instance_valid(node):
-							outlines.append({"node": node, "parent": node.get_parent()})
-					for node in tree.get_nodes_in_group("TeamCreateCursors"):
-						if is_instance_valid(node):
-							outlines.append({"node": node, "parent": node.get_parent()})
-
-				for data in outlines:
-					data["parent"].remove_child(data["node"])
-
-				var packed = PackedScene.new()
-				var err = packed.pack(current_scene)
-
-				for data in outlines:
-					if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
-						data["parent"].add_child(data["node"])
-
-				if err == OK:
-					var peer_uid = multiplayer.get_unique_id() if (network and network.is_connected_to_session()) else 1
-					var temp_path = "user://temp_scene_state_" + str(peer_uid) + ".tscn"
-					if ResourceSaver.save(packed, temp_path) == OK:
-						network._restore_dummy_paths_in_file(temp_path)
-						if FileAccess.file_exists(temp_path):
-							var bytes = FileAccess.get_file_as_bytes(temp_path)
-							_send_scene_bytes_to_peer(path, bytes, id)
-						DirAccess.remove_absolute(temp_path)
+				var ei = _get_editor_interface()
+				if ei and ei.has_method("save_scene"):
+					ei.save_scene()
+				if FileAccess.file_exists(path):
+					var bytes = FileAccess.get_file_as_bytes(path)
+					_send_scene_bytes_to_peer(path, bytes, id)
 
 func _on_node_added(node: Node):
+	if not is_instance_valid(node):
+		return
+	if node.name.begins_with("TeamCreateSelectionOutline_") or node.name.begins_with("TeamCreateCursor"):
+		return
+
 	# Connect for tracking before removal
 	if not node.tree_exiting.is_connected(_on_node_tree_exiting.bind(node)):
 		node.tree_exiting.connect(_on_node_tree_exiting.bind(node))
@@ -1003,7 +1024,7 @@ func _on_node_added(node: Node):
 		return
 
 	# Prevent syncing internal nodes like editor UI or auto-generated items
-	if node.name.begins_with("@") or node.name.begins_with("TeamCreateSelectionOutline_") or node.name.begins_with("TeamCreateCursor"):
+	if node.name.begins_with("TeamCreateSelectionOutline_") or node.name.begins_with("TeamCreateCursor"):
 		return
 
 	var current_scene = _get_edited_scene_root()
@@ -1088,9 +1109,7 @@ func _sync_all_node_properties(node: Node, id: String, scene_path: String = ""):
 								r_path = network._dummy_path_to_original[r_path]
 							current_props[p.name] = r_path
 						else:
-							if not val.is_connected("changed", _on_resource_changed.bind(id, p.name, val)):
-								val.connect("changed", _on_resource_changed.bind(id, p.name, val))
-
+							_register_subresource_listener(val, id, p.name)
 							current_props[p.name] = export_sub_resource_dict(val, scene_path)
 				else:
 					current_props[p.name] = val
@@ -1158,6 +1177,9 @@ func _on_node_removed(node: Node):
 	await get_tree().process_frame
 	await get_tree().process_frame
 
+	if _is_reloading_scene:
+		return
+
 	# Check if node was reparented rather than deleted
 	if is_instance_valid(node) and node.is_inside_tree():
 		var current_scene = _get_edited_scene_root()
@@ -1177,7 +1199,7 @@ func _on_node_removed(node: Node):
 
 	# If the root node that owned this node is no longer valid, the entire scene was closed or reloaded.
 	# We should NOT broadcast individual node removals for a destroyed scene.
-	if root_node != null and (not is_instance_valid(root_node) or not root_node.is_inside_tree()):
+	if root_node == null or not is_instance_valid(root_node) or not root_node.is_inside_tree():
 		return
 
 	# Prevent sending removal if the user is just closing/switching scenes.
@@ -1185,6 +1207,8 @@ func _on_node_removed(node: Node):
 	if current_scene:
 		var active_scene_path = current_scene.scene_file_path
 		if scene_path != "" and active_scene_path != scene_path:
+			return
+		if root_node != current_scene and root_node.owner != current_scene:
 			return
 	else:
 		# If current_scene is null, they are closing the last scene tab.
@@ -1205,6 +1229,8 @@ func _on_node_renamed(node: Node):
 	if current_scene and node == current_scene:
 		var old_name = _node_names.get(inst_id, "")
 		var new_name = node.name
+		if new_name.begins_with("@"):
+			return # Never rename scene root to an internal engine temporary name
 		if old_name != "" and old_name != new_name:
 			_node_names[inst_id] = new_name
 			rpc("remote_node_renamed_exact", "__SCENE_ROOT__", old_name, new_name, scene_path)
@@ -1344,6 +1370,9 @@ func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: St
 			_ignore_next_structure_event = false
 			return
 		if parent_id == "__SCENE_ROOT__":
+			if new_name.begins_with("@"):
+				_ignore_next_structure_event = false
+				return
 			current_scene.name = new_name
 			_node_names[current_scene.get_instance_id()] = new_name
 			mark_scene_dirty(scene_path)
@@ -1359,6 +1388,11 @@ func remote_node_renamed_exact(parent_id: String, old_name: String, new_name: St
 	_ignore_next_structure_event = false
 
 func _send_update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
+	if not is_inside_tree() or not (network and network.is_connected_to_session()):
+		return
+	if typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes") and (value["sub_resource_bytes"] as PackedByteArray).is_empty():
+		return
+
 	var bytes = PackedByteArray()
 
 	# Always serialize to check size
@@ -1399,14 +1433,16 @@ func update_node_property_chunked(id: String, prop_name: String, transfer_id: in
 
 		var reassembled_value = bytes_to_var_with_objects(full_bytes)
 
-		# Forward the reassembled value to the main property handler
+		# Forward the reassembled value to the main property handler without duplicate relay
+		_is_forwarding_chunked_property = true
 		update_node_property(id, prop_name, reassembled_value, scene_path)
+		_is_forwarding_chunked_property = false
 
 @rpc("any_peer", "reliable")
 func update_node_property(id: String, prop_name: String, value: Variant, scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if (network and network.is_connected_to_session()) else 0
 
-	if network and network.is_server and sender_id != 0:
+	if network and network.is_server and sender_id != 0 and not _is_forwarding_chunked_property:
 		for peer_id in _get_connected_peers():
 			if peer_id != sender_id:
 				rpc_id(peer_id, "update_node_property", id, prop_name, value, scene_path)
@@ -1482,23 +1518,27 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 				if is_ready:
 					var subres_id = value.get("sub_resource_id", "")
 					var existing_res = _get_cached_subresource(subres_id, scene_path) if subres_id != "" else null
+					var applied_res: Resource = null
 					if existing_res:
 						var updated = _update_existing_subresource(existing_res, value)
 						if updated:
 							if node.get(prop_name) != existing_res:
 								node.set(prop_name, existing_res)
+							applied_res = existing_res
 						else:
 							var res = _import_sub_resource(value)
 							if res:
 								if subres_id != "":
 									_register_subresource(res, subres_id, scene_path)
 								node.set(prop_name, res)
+								applied_res = res
 					else:
 						var res = _import_sub_resource(value)
 						if res:
 							if subres_id != "":
 								_register_subresource(res, subres_id, scene_path)
 							node.set(prop_name, res)
+							applied_res = res
 				else:
 					_pending_resource_properties.append({"id": id, "prop_name": prop_name, "value": value, "scene_path": scene_path, "sender_id": sender_id, "timeout": Time.get_ticks_msec() + 30000})
 			elif prop_name == "__connections__":
@@ -1511,7 +1551,18 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 
 			if not _last_tracked_properties.has(id):
 				_last_tracked_properties[id] = {}
-			_last_tracked_properties[id][prop_name] = value
+
+			_dirty_subresources.erase(id + ":" + prop_name)
+
+			if typeof(value) == TYPE_DICTIONARY and value.has("sub_resource_bytes"):
+				var stored_dict = value.duplicate()
+				var cur_obj = node.get(prop_name)
+				if is_instance_valid(cur_obj) and cur_obj is Resource:
+					stored_dict["resource_instance_id"] = cur_obj.get_instance_id()
+					_register_subresource_listener(cur_obj, id, prop_name)
+				_last_tracked_properties[id][prop_name] = stored_dict
+			else:
+				_last_tracked_properties[id][prop_name] = value
 
 # ==============================================================================
 # Automatic Semantic Offline Scene Merge
@@ -1811,6 +1862,14 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 					_index_scene_subresources(instance, path)
 			return
 		else:
+			_synced_scene_states[path] = true
+			if FileAccess.file_exists(path):
+				var disk_bytes = FileAccess.get_file_as_bytes(path)
+				if disk_bytes.size() == bytes.size() and disk_bytes == bytes:
+					_last_scene_path = path
+					network.tc_print("Team Create: Received scene is already up-to-date on disk: ", path)
+					return
+
 			var editor = _get_editor_interface()
 			var current_scene = editor.get_edited_scene_root() if editor else null
 			var open_scenes = editor.get_open_scenes() if editor else PackedStringArray()
@@ -1864,15 +1923,28 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 					if network and network.file_sync:
 						network.file_sync.backup_scene(path)
 					_file_write_mutex.lock()
-					var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)
+					var tmp_path = path + ".tmp"
+					var file = FileAccess.open(tmp_path, FileAccess.WRITE)
+					var saved_ok = false
 					if file:
 						file.store_buffer(bytes)
 						file.close()
 						if DirAccess.remove_absolute(path) == OK or not FileAccess.file_exists(path):
-							DirAccess.rename_absolute(path + ".tmp", path)
+							if DirAccess.rename_absolute(tmp_path, path) == OK:
+								saved_ok = true
+						if not saved_ok:
+							file = FileAccess.open(path, FileAccess.WRITE)
+							if file:
+								file.store_buffer(bytes)
+								file.close()
+							DirAccess.remove_absolute(tmp_path)
 					_file_write_mutex.unlock()
 
+				_is_reloading_scene = true
 				editor.reload_scene_from_path(path)
+				get_tree().create_timer(0.5).timeout.connect(func():
+					_is_reloading_scene = false
+				)
 				var prev_path = current_scene.scene_file_path if current_scene else ""
 				if prev_path != "":
 					editor.open_scene_from_path(prev_path)
@@ -1899,50 +1971,26 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 func request_scene_state(scene_path: String):
 	if scene_path == "":
 		return
+	if not (network and network.is_server):
+		return
 
-	var current_scene = _get_target_scene(scene_path)
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
 
-	if current_scene and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) == scene_path:
-		var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if _dirty_scenes.size() > 0:
+		save_dirty_scenes()
 
-		# Temporarily remove selection outlines so they aren't packed
-		var outlines = []
-		var tree = current_scene.get_tree()
-		if tree:
-			for node in tree.get_nodes_in_group("TeamCreateSelectionOutlines"):
-				if is_instance_valid(node):
-					outlines.append({"node": node, "parent": node.get_parent()})
-			for node in tree.get_nodes_in_group("TeamCreateCursors"):
-				if is_instance_valid(node):
-					outlines.append({"node": node, "parent": node.get_parent()})
+	if network.get("is_standalone_server"):
+		_save_server_tracked_scenes()
+	else:
+		var ei = _get_editor_interface()
+		if ei and ei.has_method("save_scene"):
+			var cur_scene = ei.get_edited_scene_root()
+			if cur_scene and cur_scene.scene_file_path == scene_path:
+				ei.save_scene()
 
-		for data in outlines:
-			data["parent"].remove_child(data["node"])
-
-		var packed = PackedScene.new()
-		var err = packed.pack(current_scene)
-
-		# Restore outlines
-		for data in outlines:
-			if is_instance_valid(data["parent"]) and is_instance_valid(data["node"]):
-				data["parent"].add_child(data["node"])
-
-		if err == OK:
-			var peer_uid = multiplayer.get_unique_id() if (network and network.is_connected_to_session()) else 1
-			var temp_path = "user://temp_scene_state_" + str(peer_uid) + ".tscn"
-			if ResourceSaver.save(packed, temp_path) == OK:
-				network._restore_dummy_paths_in_file(temp_path)
-				if FileAccess.file_exists(temp_path):
-					var bytes = FileAccess.get_file_as_bytes(temp_path)
-					var total_size = bytes.size()
-
-					if total_size == 0:
-						rpc_id(sender_id, "receive_scene_state", scene_path, randi(), bytes, true)
-						DirAccess.remove_absolute(temp_path)
-						return
-
-					rpc_id(sender_id, "receive_scene_state", scene_path, randi(), bytes, true)
-				DirAccess.remove_absolute(temp_path)
+	if FileAccess.file_exists(scene_path):
+		var bytes = FileAccess.get_file_as_bytes(scene_path)
+		rpc_id(sender_id, "receive_scene_state", scene_path, randi(), bytes, true)
 
 @rpc("any_peer", "reliable")
 func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray, is_final: bool = true):
@@ -1968,19 +2016,17 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 	bytes = full_bytes
 
 	if bytes.size() > 0:
+		_synced_scene_states[path] = true
 		var current_disk_bytes = PackedByteArray()
 		if FileAccess.file_exists(path):
 			current_disk_bytes = FileAccess.get_file_as_bytes(path)
 		var is_identical = (current_disk_bytes.size() == bytes.size() and current_disk_bytes == bytes)
 
 		if is_identical:
+			_last_scene_path = path
 			if not (network and network.get("is_standalone_server")):
-				var editor = _get_editor_interface()
-				if editor:
-					var current_scene = editor.get_edited_scene_root()
-					if current_scene and current_scene.scene_file_path == path:
-						_last_scene_path = path
-						return
+				network.tc_print("Team Create: Scene state is already up-to-date on disk: ", path)
+				return
 
 		var merge_data = prepare_offline_scene_merge(path, bytes)
 
@@ -2414,16 +2460,35 @@ func _apply_connections(node: Node, connections_data: Array, current_scene: Node
 func _safe_resource_exists(path: String) -> bool:
 	if network and network.get("is_standalone_server"):
 		return FileAccess.file_exists(path)
-	if not ResourceLoader.exists(path):
+	if not FileAccess.file_exists(path):
 		return false
-	var import_path = path + ".import"
-	if FileAccess.file_exists(import_path):
+	var ext = path.get_extension().to_lower()
+	if ext in ["png", "jpg", "jpeg", "svg", "webp", "wav", "ogg", "mp3", "glb", "gltf", "fbx", "dae"]:
+		var import_path = path + ".import"
+		if not FileAccess.file_exists(import_path):
+			return false
 		var config = ConfigFile.new()
 		if config.load(import_path) == OK:
-			var dest_files = config.get_value("deps", "dest_files", [])
-			for dest_file in dest_files:
-				if not FileAccess.file_exists(dest_file):
+			if config.has_section("remap"):
+				var target_remap = ""
+				for key in config.get_section_keys("remap"):
+					if key.begins_with("path."):
+						var feat = key.get_slice(".", 1)
+						if OS.has_feature(feat):
+							target_remap = config.get_value("remap", key, "")
+							break
+				if target_remap == "" and config.has_section_key("remap", "path"):
+					target_remap = config.get_value("remap", "path", "")
+				if target_remap != "" and not FileAccess.file_exists(target_remap):
 					return false
+
+			var dest_files = config.get_value("deps", "dest_files", [])
+			if dest_files.size() > 0:
+				for dest_file in dest_files:
+					if not FileAccess.file_exists(dest_file):
+						return false
+		else:
+			return false
 	return true
 
 func _import_sub_resource(value: Dictionary) -> Resource:
@@ -2498,9 +2563,7 @@ func _on_resource_changed(target, prop_name: String, res: Resource):
 	else:
 		return
 
-	# Force re-serialization of this resource next frame
-	if _last_tracked_properties.has(id) and _last_tracked_properties[id].has(prop_name):
-		_last_tracked_properties[id].erase(prop_name)
+	_dirty_subresources[id + ":" + prop_name] = true
 
 func _clean_scene_path(path: String) -> String:
 	if path == "":

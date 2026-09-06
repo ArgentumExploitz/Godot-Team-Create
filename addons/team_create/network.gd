@@ -20,6 +20,7 @@ var file_sync
 var scene_sync
 var test_runner
 var node_locks: Dictionary = {}
+var _recently_saved_scenes: Dictionary = {}
 
 var _local_username = ""
 # Console thread
@@ -769,6 +770,7 @@ func disconnect_peer():
 		scene_sync._is_applying_remote_update = false
 		scene_sync._is_reloading_scene = false
 		scene_sync._ignore_next_structure_event = false
+		scene_sync._synced_scene_states.clear()
 	peers.clear()
 	_color_assignment_counter = 0
 	_assigned_colors.clear()
@@ -888,8 +890,11 @@ func _request_scene_from_server():
 			if main_scene != "" and FileAccess.file_exists(main_scene):
 				ei.open_scene_from_path(main_scene)
 				scene_path = main_scene
-		rpc_id(1, "request_push_scene", scene_path)
-	else:
+		if not is_server and multiplayer and multiplayer.get_unique_id() != 1:
+			if scene_path != "" and scene_sync:
+				scene_sync._synced_scene_states[scene_path] = true
+			rpc_id(1, "request_push_scene", scene_path)
+	elif not is_server and multiplayer and multiplayer.get_unique_id() != 1:
 		rpc_id(1, "request_push_scene", "")
 
 @rpc("any_peer", "reliable")
@@ -1112,12 +1117,6 @@ static func assign_unique_id(node: Node) -> String:
 	if not node.has_meta("_tc_uuid"):
 		var uid = str(ResourceUID.create_id())
 		node.set_meta("_tc_uuid", uid)
-	elif root and root != node:
-		# Check for UUID collision within the same scene (e.g. from node duplication)
-		var existing = _find_node_by_uuid(root, str(node.get_meta("_tc_uuid")))
-		if existing and existing != node:
-			var uid = str(ResourceUID.create_id())
-			node.set_meta("_tc_uuid", uid)
 
 	if root:
 		if node == root:
@@ -1593,12 +1592,13 @@ func node_lock_denied(node_id: String):
 
 # --- Manual Scene Save Synchronization ---
 func on_local_scene_saved(filepath: String):
+	_recently_saved_scenes[filepath] = Time.get_ticks_msec()
 	if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 		if FileAccess.file_exists(filepath):
 			var bytes = FileAccess.get_file_as_bytes(filepath)
 			if is_server:
 				rpc("receive_manual_save", filepath, bytes)
-			else:
+			elif multiplayer and multiplayer.get_unique_id() != 1:
 				rpc_id(1, "receive_manual_save", filepath, bytes)
 
 @rpc("any_peer", "reliable")
@@ -1612,13 +1612,24 @@ func receive_manual_save(filepath: String, bytes: PackedByteArray):
 	if bytes.size() > 0:
 		if file_sync and file_sync.has_method("backup_scene"):
 			file_sync.backup_scene(filepath)
-		var f = FileAccess.open(filepath + ".tmp", FileAccess.WRITE)
+		var tmp_path = filepath + ".tmp"
+		var f = FileAccess.open(tmp_path, FileAccess.WRITE)
+		var saved_ok = false
 		if f:
 			f.store_buffer(bytes)
 			f.close()
 			if DirAccess.remove_absolute(filepath) == OK or not FileAccess.file_exists(filepath):
-				DirAccess.rename_absolute(filepath + ".tmp", filepath)
-			tc_print("Team Create: Synchronized manual save from peer for: ", filepath)
+				if DirAccess.rename_absolute(tmp_path, filepath) == OK:
+					saved_ok = true
+			if not saved_ok:
+				f = FileAccess.open(filepath, FileAccess.WRITE)
+				if f:
+					f.store_buffer(bytes)
+					f.close()
+					saved_ok = true
+				DirAccess.remove_absolute(tmp_path)
+			if saved_ok:
+				tc_print("Team Create: Synchronized manual save from peer for: ", filepath)
 		if is_standalone_server and scene_sync:
 			if scene_sync._server_tracked_scenes.has(filepath):
 				var s = scene_sync._server_tracked_scenes[filepath]
@@ -1636,9 +1647,17 @@ func receive_manual_save(filepath: String, bytes: PackedByteArray):
 			var iface = _get_editor_interface()
 			if iface:
 				if iface.get_resource_filesystem():
-					iface.get_resource_filesystem().reimport_files(PackedStringArray([filepath]))
+					iface.get_resource_filesystem().update_file(filepath)
 				if iface.has_method("reload_scene_from_path"):
+					if scene_sync:
+						scene_sync._is_reloading_scene = true
+						scene_sync._last_scene_path = filepath
 					iface.reload_scene_from_path(filepath)
+					if scene_sync:
+						get_tree().create_timer(0.5).timeout.connect(func():
+							if is_instance_valid(scene_sync):
+								scene_sync._is_reloading_scene = false
+						)
 
 func create_server_backup(target_path: String = ""):
 	var backed_up = []
@@ -1687,7 +1706,7 @@ func create_backup(target_path: String = "") -> Array:
 	if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 		if is_server:
 			create_server_backup(path_to_backup)
-		else:
+		elif multiplayer and multiplayer.get_unique_id() != 1:
 			rpc_id(1, "request_server_backup", path_to_backup)
 
 	return backed_up

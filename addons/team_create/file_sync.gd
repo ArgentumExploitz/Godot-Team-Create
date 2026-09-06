@@ -269,9 +269,21 @@ func backup_scene(path: String, is_manual: bool = false) -> String:
 func request_asset_immediately(path: String, sender_id: int = 1):
 	if not _is_safe_path(path):
 		return
-	if FileAccess.file_exists(path) and (not FileAccess.file_exists(path + ".import") or ResourceLoader.exists(path)):
-		asset_imported.emit(path)
-		return
+
+	var is_importable = not (path.ends_with(".tscn") or path.ends_with(".scn") or path.ends_with(".gd") or path.ends_with(".tres"))
+	var file_exists = FileAccess.file_exists(path)
+	var is_safe_loaded = false
+	if network and network.scene_sync:
+		is_safe_loaded = network.scene_sync._safe_resource_exists(path)
+
+	if file_exists:
+		if is_safe_loaded:
+			asset_imported.emit(path)
+			return
+		elif is_importable:
+			var ei = _get_editor_interface()
+			if ei and ei.get_resource_filesystem() and not ei.get_resource_filesystem().is_scanning():
+				ei.get_resource_filesystem().scan()
 
 	if network and network.is_connected_to_session():
 		var target_id = sender_id
@@ -296,6 +308,9 @@ func request_asset_package(path: String):
 
 @rpc("any_peer", "reliable")
 func deliver_asset_package(path: String, asset_bytes: PackedByteArray, import_bytes: PackedByteArray):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if network and not network.is_server and sender_id != 1:
+		return
 	if not _is_safe_path(path):
 		return
 	var dir_path = path.get_base_dir()
@@ -319,8 +334,8 @@ func deliver_asset_package(path: String, asset_bytes: PackedByteArray, import_by
 			_file_hash_cache.erase(path)
 
 		var ei = _get_editor_interface()
-		if ei and ei.get_resource_filesystem():
-			ei.get_resource_filesystem().reimport_files(PackedStringArray([path]))
+		if ei and ei.get_resource_filesystem() and not ei.get_resource_filesystem().is_scanning():
+			ei.get_resource_filesystem().scan()
 
 		asset_imported.emit(path)
 		if network:
@@ -459,7 +474,10 @@ func sync_all_files(all_files: Array = []):
 		if path.begins_with("res://addons/team_create"):
 			continue
 		file_hashes[path] = _get_cached_md5(path)
-	rpc("compare_and_sync_files", file_hashes)
+	if network and network.is_server:
+		rpc("compare_and_sync_files", file_hashes)
+	elif network and network.is_connected_to_session() and multiplayer.get_unique_id() != 1:
+		rpc_id(1, "compare_and_sync_files", file_hashes)
 	_is_syncing_files = false
 
 func sync_all_files_to_peer(id: int, all_files: Array = []):
@@ -533,8 +551,11 @@ func receive_project_settings(bytes: PackedByteArray):
 
 @rpc("any_peer", "reliable")
 func compare_and_sync_files(peer_hashes: Dictionary):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if network and not network.is_server and sender_id != 1:
+		return # Clients strictly sync from the authoritative server (peer 1)
+
 	_is_syncing_files = true
-	var sender_id = multiplayer.get_remote_sender_id()
 	var local_files = get_all_files("res://")
 	var local_hashes = {}
 
@@ -578,9 +599,15 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 		if path == "res://project.godot" or path.begins_with("res://.godot/"):
 			continue
 
-		# Server is authoritative: The server never downloads existing files over its own copy
+		# Server is authoritative for scenes: The server never downloads existing scenes over its own copy
 		if network and network.is_server and local_hashes.has(path):
-			continue
+			if path.ends_with(".tscn") or path.ends_with(".scn"):
+				continue
+
+		# Don't request a scene file if we recently saved it locally (within 5 seconds)
+		if network and network.get("_recently_saved_scenes") and network._recently_saved_scenes.has(path):
+			if Time.get_ticks_msec() - network._recently_saved_scenes[path] < 5000:
+				continue
 
 		if not local_hashes.has(path) or local_hashes[path] != peer_hashes[path]:
 			files_to_request.append(path)
@@ -627,6 +654,7 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 
 func _download_file_http(path: String):
 	var http_request = HTTPRequest.new()
+	http_request.timeout = 10.0
 	add_child(http_request)
 	http_request.request_completed.connect(self._http_download_completed.bind(http_request, path))
 
@@ -719,11 +747,13 @@ func request_file(path: String):
 
 @rpc("any_peer", "reliable")
 func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_final: bool = true):
+	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
+	if network and not network.is_server and sender_id != 1:
+		return # Clients only accept files delivered by the server
 	if not _is_safe_path(path):
 		printerr("Team Create: Unauthorized or invalid file path received: ", path)
 		return
 
-	var sender_id = multiplayer.get_remote_sender_id()
 	var file_key = str(sender_id) + "_" + str(transfer_id) + "_" + path
 	if not _receiving_files.has(file_key):
 		_receiving_files[file_key] = PackedByteArray()
@@ -755,6 +785,22 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 			open_scenes = ei.get_open_scenes()
 
 		if path in open_scenes:
+			if FileAccess.file_exists(path):
+				var current_disk_bytes = FileAccess.get_file_as_bytes(path)
+				if current_disk_bytes.size() == bytes.size() and current_disk_bytes == bytes:
+					downloading_files.erase(path)
+					if _pending_files_to_receive > 0:
+						_pending_files_to_receive -= 1
+						call_deferred("_update_sync_blocker")
+						if _pending_files_to_receive <= 0:
+							call_deferred("_hide_sync_blocker")
+							_known_files = get_all_files("res://")
+							sync_completed.emit()
+					if network and network.scene_sync:
+						network.scene_sync._synced_scene_states[path] = true
+						network.scene_sync._last_scene_path = path
+					return
+
 			var merge_data = {}
 			if network and network.scene_sync and not network.is_server:
 				merge_data = network.scene_sync.prepare_offline_scene_merge(path, bytes)
@@ -768,17 +814,29 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 			if bytes.size() > 0:
 				backup_scene(path)
 				_file_write_mutex.lock()
-				var file = FileAccess.open(path + ".tmp", FileAccess.WRITE)
+				var tmp_path = path + ".tmp"
+				var file = FileAccess.open(tmp_path, FileAccess.WRITE)
+				var saved_ok = false
 				if file:
 					file.store_buffer(bytes)
 					file.close()
 					if DirAccess.remove_absolute(path) == OK or not FileAccess.file_exists(path):
-						DirAccess.rename_absolute(path + ".tmp", path)
+						if DirAccess.rename_absolute(tmp_path, path) == OK:
+							saved_ok = true
+					if not saved_ok:
+						file = FileAccess.open(path, FileAccess.WRITE)
+						if file:
+							file.store_buffer(bytes)
+							file.close()
+						DirAccess.remove_absolute(tmp_path)
 				_file_write_mutex.unlock()
 
-			if is_active:
+			if network and network.scene_sync:
 				network.scene_sync._is_reloading_scene = true
-				network.scene_sync._force_full_sync_next_frame = true
+				network.scene_sync._last_scene_path = path
+				network.scene_sync._synced_scene_states[path] = true
+				if is_active:
+					network.scene_sync._force_full_sync_next_frame = true
 
 			var prev_path = current_scene.scene_file_path if current_scene else ""
 			ei.reload_scene_from_path(path)
@@ -787,13 +845,13 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 				# reload_scene_from_path might change the active tab, so we switch back just in case
 				ei.open_scene_from_path(prev_path)
 
-			if is_active:
-				get_tree().create_timer(0.5).timeout.connect(func():
-					if is_instance_valid(network) and network.scene_sync:
-						network.scene_sync._is_reloading_scene = false
-						if merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
-							network.scene_sync.apply_offline_merge_deferred(path, merge_data)
-				)
+			get_tree().create_timer(0.5).timeout.connect(func():
+				if is_instance_valid(network) and network.scene_sync:
+					network.scene_sync._is_reloading_scene = false
+					network.scene_sync._last_scene_path = path
+					if is_active and merge_data.size() > 0 and merge_data.get("added_nodes", []).size() > 0:
+						network.scene_sync.apply_offline_merge_deferred(path, merge_data)
+			)
 
 			downloading_files.erase(path)
 			if _pending_files_to_receive > 0:
@@ -839,18 +897,6 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 
 		asset_imported.emit(path)
 
-		# Trigger Editor resource scan if it's an asset, debounced to prevent premature imports generating new UIDs
-		var ei = _get_editor_interface()
-		if ei and ei.get_resource_filesystem():
-			if _scan_timer == null:
-				_scan_timer = get_tree().create_timer(0.5)
-				_scan_timer.timeout.connect(func():
-					_scan_timer = null
-					var e = _get_editor_interface()
-					if e and e.get_resource_filesystem():
-						e.get_resource_filesystem().scan()
-				)
-
 	downloading_files.erase(path)
 	if _pending_files_to_receive > 0:
 		_pending_files_to_receive -= 1
@@ -860,11 +906,25 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 			_known_files = get_all_files("res://")
 			sync_completed.emit()
 
+			# Trigger Editor resource scan only once ALL files are downloaded and saved
+			var ei_scan = _get_editor_interface()
+			if ei_scan and ei_scan.get_resource_filesystem():
+				if _scan_timer == null:
+					_scan_timer = get_tree().create_timer(0.3)
+					_scan_timer.timeout.connect(func():
+						_scan_timer = null
+						var e = _get_editor_interface()
+						if e and e.get_resource_filesystem():
+							e.get_resource_filesystem().scan()
+					)
+
 
 @rpc("any_peer", "reliable")
 func remote_delete_file(path: String):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 1
 	var is_srv = network and network.is_server
+	if not is_srv and sender_id != 1:
+		return # Clients only accept file deletions from the server
 
 	if not _is_safe_path(path):
 		return
