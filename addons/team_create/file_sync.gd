@@ -241,8 +241,64 @@ var _file_hash_cache: Dictionary = {}
 signal sync_completed
 var auto_backups_enabled = false
 var allow_client_file_deletions = true
+var auto_relay_files = true
 var _initial_sync_done = false
 signal asset_imported(path: String)
+
+var _relay_timer_active: bool = false
+var _last_file_received_time: int = 0
+var _has_unrelayed_files: bool = false
+
+func _schedule_relay_sync():
+	var relay_enabled = auto_relay_files
+	if network and "auto_relay_files" in network:
+		relay_enabled = network.auto_relay_files
+	if not (network and network.is_server and relay_enabled):
+		return
+	if not is_inside_tree() or get_tree() == null:
+		return
+	if not network.is_connected_to_session() or multiplayer.get_peers().is_empty():
+		return
+
+	_last_file_received_time = Time.get_ticks_msec()
+	if _relay_timer_active:
+		return
+
+	_relay_timer_active = true
+	_check_relay_after_delay()
+
+func _check_relay_after_delay():
+	if not is_inside_tree() or get_tree() == null:
+		_relay_timer_active = false
+		return
+
+	get_tree().create_timer(0.5).timeout.connect(func():
+		if not is_instance_valid(self) or not is_inside_tree() or get_tree() == null:
+			_relay_timer_active = false
+			return
+
+		var now = Time.get_ticks_msec()
+		if now - _last_file_received_time < 450:
+			_check_relay_after_delay()
+			return
+
+		_relay_timer_active = false
+
+		var relay_enabled = auto_relay_files
+		if network and "auto_relay_files" in network:
+			relay_enabled = network.auto_relay_files
+		if not (network and network.is_server and relay_enabled and _has_unrelayed_files):
+			return
+		if not network.is_connected_to_session() or multiplayer.get_peers().is_empty():
+			return
+		if _pending_files_to_receive > 0 or not downloading_files.is_empty():
+			_schedule_relay_sync()
+			return
+
+		_has_unrelayed_files = false
+		network.tc_print("Team Create: Auto-relaying updated project files to connected peers...")
+		sync_all_files()
+	)
 
 func backup_scene(path: String, is_manual: bool = false) -> String:
 	if not is_manual and not auto_backups_enabled:
@@ -488,7 +544,11 @@ func sync_all_files(all_files: Array = []):
 			continue
 		file_hashes[path] = _get_cached_md5(path)
 	if network and network.is_server:
-		rpc("compare_and_sync_files", file_hashes)
+		var relay_enabled = auto_relay_files
+		if network and "auto_relay_files" in network:
+			relay_enabled = network.auto_relay_files
+		if relay_enabled:
+			rpc("compare_and_sync_files", file_hashes)
 	elif network and network.is_connected_to_session() and multiplayer.get_unique_id() != 1:
 		rpc_id(1, "compare_and_sync_files", file_hashes)
 	_is_syncing_files = false
@@ -882,6 +942,10 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 					call_deferred("_hide_sync_blocker")
 					_known_files = get_all_files("res://")
 					sync_completed.emit()
+					if network and network.is_server and _has_unrelayed_files:
+						_schedule_relay_sync()
+			elif network and network.is_server and _has_unrelayed_files:
+				_schedule_relay_sync()
 
 			return
 
@@ -913,6 +977,12 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 			_file_write_mutex.unlock()
 			if _file_hash_cache.has(path):
 				_file_hash_cache.erase(path)
+
+			var relay_enabled = auto_relay_files
+			if network and "auto_relay_files" in network:
+				relay_enabled = network.auto_relay_files
+			if network and network.is_server and relay_enabled:
+				_has_unrelayed_files = true
 		else:
 			network.tc_print("File unchanged, skipped writing: ", path)
 
@@ -926,18 +996,23 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 			call_deferred("_hide_sync_blocker")
 			_known_files = get_all_files("res://")
 			sync_completed.emit()
+			if network and network.is_server and _has_unrelayed_files:
+				_schedule_relay_sync()
+	elif network and network.is_server and _has_unrelayed_files:
+		_schedule_relay_sync()
 
-			# Trigger Editor resource scan only once ALL files are downloaded and saved
-			var ei_scan = _get_editor_interface()
-			if ei_scan and ei_scan.get_resource_filesystem():
-				if _scan_timer == null:
-					_scan_timer = get_tree().create_timer(0.3)
-					_scan_timer.timeout.connect(func():
-						_scan_timer = null
-						var e = _get_editor_interface()
-						if e and e.get_resource_filesystem():
-							e.get_resource_filesystem().scan()
-					)
+	if _pending_files_to_receive <= 0:
+		# Trigger Editor resource scan only once ALL files are downloaded and saved
+		var ei_scan = _get_editor_interface()
+		if ei_scan and ei_scan.get_resource_filesystem():
+			if _scan_timer == null:
+				_scan_timer = get_tree().create_timer(0.3)
+				_scan_timer.timeout.connect(func():
+					_scan_timer = null
+					var e = _get_editor_interface()
+					if e and e.get_resource_filesystem():
+						e.get_resource_filesystem().scan()
+				)
 
 
 @rpc("any_peer", "reliable")
@@ -1002,3 +1077,7 @@ func _finish_http_download(path: String):
 			call_deferred("_hide_sync_blocker")
 			_known_files = get_all_files("res://")
 			sync_completed.emit()
+			if network and network.is_server and _has_unrelayed_files:
+				_schedule_relay_sync()
+	elif network and network.is_server and _has_unrelayed_files:
+		_schedule_relay_sync()

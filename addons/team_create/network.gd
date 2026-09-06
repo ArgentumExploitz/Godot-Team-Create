@@ -33,6 +33,7 @@ var auto_save_prints_enabled: bool = false
 var timeprint_enabled: bool = true
 var joins_enabled: bool = true
 var allow_client_file_deletions: bool = true
+var auto_relay_files: bool = true
 var chat_locked: bool = false
 var chat_images_enabled: bool = true
 var muted_users = []
@@ -82,6 +83,7 @@ func _ready():
 		file_sync = file_sync_script.new()
 		file_sync.name = "TeamCreateFileSync"
 		file_sync.network = self
+		file_sync.auto_relay_files = auto_relay_files
 		add_child(file_sync)
 
 	var scene_sync_script = load("res://addons/team_create/scene_sync.gd")
@@ -153,6 +155,7 @@ func _process_console_command(input: String):
 			tc_print_rich("[color=white]/backup [scene][/color]       - Creates a snapshot backup of scenes")
 			tc_print_rich("[color=white]/autobackup <true/false>[/color] - Toggles automatic backups (default: false)")
 			tc_print_rich("[color=white]/allowdeletions <true/false>[/color] - Toggles client-side file deletion replication (default: true)")
+			tc_print_rich("[color=white]/autorelay <true/false>[/color] - Toggles automatic asset relay to all peers (default: true)")
 			tc_print_rich("[color=white]/test <user> [1-6][/color]     - Runs automated live sync tests on target scene")
 			tc_print_rich("[color=cyan]--------------------------[/color]")
 		else:
@@ -470,6 +473,22 @@ func _process_console_command(input: String):
 				tc_print_rich("[color=green]Automatic backups disabled.[/color]")
 			else:
 				tc_print_rich("[color=red]Invalid argument. Use true or false.[/color]")
+	elif cmd == "/autorelay" or cmd == "autorelay":
+		if args.size() < 2:
+			var current_state = file_sync.auto_relay_files if file_sync else auto_relay_files
+			tc_print_rich("[color=orange]Usage: /autorelay <true/false> (Current: " + str(current_state) + ")[/color]")
+		else:
+			var val = args[1].to_lower()
+			if val == "true":
+				auto_relay_files = true
+				if file_sync: file_sync.auto_relay_files = true
+				tc_print_rich("[color=green]Automatic file relay enabled (dropped/imported files will broadcast to all peers).[/color]")
+			elif val == "false":
+				auto_relay_files = false
+				if file_sync: file_sync.auto_relay_files = false
+				tc_print_rich("[color=yellow]Automatic file relay disabled (lazy sync on scene reference only).[/color]")
+			else:
+				tc_print_rich("[color=red]Invalid argument. Use true or false.[/color]")
 	elif cmd == "/test" or cmd == "test":
 		if test_runner:
 			test_runner.handle_test_command(args)
@@ -780,6 +799,8 @@ func disconnect_peer():
 		file_sync._hide_sync_blocker()
 		file_sync._initial_sync_done = false
 		file_sync.downloading_files.clear()
+		file_sync._has_unrelayed_files = false
+		file_sync._relay_timer_active = false
 		if file_sync.has_method("stop_http_server"):
 			file_sync.stop_http_server()
 	if was_connected:
