@@ -1,0 +1,24 @@
+name: Dispatch Template Update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'addons/team_create/**'
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Template Sync
+        env:
+          SYNC_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN }}
+        if: env.SYNC_TOKEN != ''
+        run: |
+          echo "Dispatching plugin_updated event to template repository..."
+          curl -s -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $SYNC_TOKEN" \
+            https://api.github.com/repos/N3rmis/Godot-Team-Create-Template/dispatches \
+            -d '{"event_type":"plugin_updated"}'
