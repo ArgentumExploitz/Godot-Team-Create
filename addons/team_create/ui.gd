@@ -67,6 +67,8 @@ func _build_ui() -> void:
 	var scroll = ScrollContainer.new()
 	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 5)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(scroll)
 
 	var main_vbox = VBoxContainer.new()
@@ -78,6 +80,8 @@ func _build_ui() -> void:
 	title_label = Label.new()
 	title_label.text = "Godot Team Create"
 	title_label.add_theme_font_size_override("font_size", 18)
+	title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_bold_labels.append(title_label)
 	main_vbox.add_child(title_label)
 
@@ -96,24 +100,31 @@ func _build_ui() -> void:
 	# --- Status & Users Panel ---
 	status_panel = PanelContainer.new()
 	status_panel.add_theme_stylebox_override("panel", panel_style)
+	status_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main_vbox.add_child(status_panel)
 
 	var status_vbox = VBoxContainer.new()
+	status_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_panel.add_child(status_vbox)
 
 	status_header = Label.new()
 	status_header.text = "Status & Users"
+	status_header.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status_header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_bold_labels.append(status_header)
 	status_vbox.add_child(status_header)
 
 	status_label = Label.new()
 	status_label.text = "Status: Disconnected"
 	status_label.add_theme_color_override("font_color", Color.GRAY)
+	status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_vbox.add_child(status_label)
 
 	server_msg_label = Label.new()
 	server_msg_label.add_theme_color_override("font_color", Color.YELLOW)
-	server_msg_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	server_msg_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	server_msg_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	server_msg_label.hide()
 	status_vbox.add_child(server_msg_label)
 
@@ -124,18 +135,24 @@ func _build_ui() -> void:
 	users_label.text = "Users: 1"
 	users_label.fit_content = true
 	users_label.scroll_active = false
+	users_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	users_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_vbox.add_child(users_label)
 
 	# --- Profile Panel ---
 	var profile_panel = PanelContainer.new()
 	profile_panel.add_theme_stylebox_override("panel", panel_style)
+	profile_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main_vbox.add_child(profile_panel)
 
 	var profile_vbox = VBoxContainer.new()
+	profile_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	profile_panel.add_child(profile_vbox)
 
 	profile_header = Label.new()
 	profile_header.text = "Profile"
+	profile_header.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	profile_header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_bold_labels.append(profile_header)
 	profile_vbox.add_child(profile_header)
 
@@ -150,24 +167,29 @@ func _build_ui() -> void:
 	# --- Connectivity Panel ---
 	var conn_panel = PanelContainer.new()
 	conn_panel.add_theme_stylebox_override("panel", panel_style)
+	conn_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main_vbox.add_child(conn_panel)
 
 	var conn_vbox = VBoxContainer.new()
 	conn_vbox.add_theme_constant_override("separation", 8)
+	conn_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	conn_panel.add_child(conn_vbox)
 
 	conn_header = Label.new()
 	conn_header.text = "Connectivity"
+	conn_header.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	conn_header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_bold_labels.append(conn_header)
 	conn_vbox.add_child(conn_header)
 
 	# LAN Container
 	lan_container = VBoxContainer.new()
+	lan_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	conn_vbox.add_child(lan_container)
 
 	ip_edit = LineEdit.new()
 	ip_edit.text = "127.0.0.1"
-	ip_edit.placeholder_text = "Host IP Address (e.g., 127.0.0.1 or 127.0.0.1:25567)"
+	ip_edit.placeholder_text = "Host IP Address (e.g., 127.0.0.1)"
 	ip_edit.tooltip_text = "Enter the IP address of the host you want to join over LAN."
 	ip_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ip_edit.clear_button_enabled = true
@@ -176,6 +198,7 @@ func _build_ui() -> void:
 	lan_container.add_child(ip_edit)
 
 	var lan_btn_hbox = HBoxContainer.new()
+	lan_btn_hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lan_container.add_child(lan_btn_hbox)
 
 	host_btn = Button.new()
@@ -183,6 +206,7 @@ func _build_ui() -> void:
 	host_btn.tooltip_text = "Starts server on LAN and automatically connects you to it."
 	host_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	host_btn.pressed.connect(_on_host_pressed)
 	lan_btn_hbox.add_child(host_btn)
 
@@ -191,6 +215,7 @@ func _build_ui() -> void:
 	join_btn.tooltip_text = "Join an existing LAN server using the IP above."
 	join_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	join_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	join_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	join_btn.pressed.connect(_on_join_pressed)
 	lan_btn_hbox.add_child(join_btn)
 
@@ -212,6 +237,8 @@ func _build_ui() -> void:
 	disconnect_btn.tooltip_text = "Disconnect from the current session."
 	disconnect_btn.disabled = true
 	disconnect_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	disconnect_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	disconnect_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	disconnect_btn.add_theme_color_override("font_color", Color.INDIAN_RED)
 	disconnect_btn.add_theme_color_override("font_disabled_color", Color(0.5, 0.2, 0.2))
 	disconnect_btn.add_theme_stylebox_override("normal", disconnect_style)
@@ -221,14 +248,18 @@ func _build_ui() -> void:
 	# --- Synchronization Panel ---
 	var sync_panel = PanelContainer.new()
 	sync_panel.add_theme_stylebox_override("panel", panel_style)
+	sync_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main_vbox.add_child(sync_panel)
 
 	var sync_vbox = VBoxContainer.new()
 	sync_vbox.add_theme_constant_override("separation", 8)
+	sync_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sync_panel.add_child(sync_vbox)
 
 	sync_header = Label.new()
 	sync_header.text = "Synchronization"
+	sync_header.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sync_header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_bold_labels.append(sync_header)
 	sync_vbox.add_child(sync_header)
 
@@ -244,6 +275,8 @@ func _build_ui() -> void:
 	sync_status_btn.add_theme_color_override("font_color", Color.GRAY)
 	sync_status_btn.add_theme_stylebox_override("normal", sync_status_style)
 	sync_status_btn.add_theme_stylebox_override("disabled", sync_status_style)
+	sync_status_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sync_status_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sync_status_btn.disabled = true
 	sync_vbox.add_child(sync_status_btn)
 
@@ -252,6 +285,8 @@ func _build_ui() -> void:
 	sync_settings_btn.tooltip_text = "(Server only) Force push project.godot to all clients."
 	sync_settings_btn.disabled = true
 	sync_settings_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	sync_settings_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sync_settings_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sync_settings_btn.pressed.connect(_on_sync_settings_pressed)
 	sync_vbox.add_child(sync_settings_btn)
 
@@ -259,6 +294,8 @@ func _build_ui() -> void:
 	export_btn.text = "Export Headless Server"
 	export_btn.tooltip_text = "Generate standalone server scripts to host without the Godot editor."
 	export_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	export_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	export_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	export_btn.pressed.connect(_on_export_pressed)
 	sync_vbox.add_child(export_btn)
 
@@ -267,6 +304,8 @@ func _build_ui() -> void:
 	backup_scene_btn.tooltip_text = "Create a timestamped snapshot backup of the current scene."
 	backup_scene_btn.disabled = true
 	backup_scene_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	backup_scene_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	backup_scene_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	backup_scene_btn.pressed.connect(_on_backup_scene_pressed)
 	sync_vbox.add_child(backup_scene_btn)
 
@@ -276,6 +315,8 @@ func _build_ui() -> void:
 	update_btn.text = "Check for Updates"
 	update_btn.tooltip_text = "Check GitHub for newer versions of the Godot Team Create plugin."
 	update_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	update_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	update_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	update_btn.pressed.connect(_on_update_pressed)
 	main_vbox.add_child(update_btn)
 
@@ -317,13 +358,13 @@ func set_connected(is_host: bool, connected_to_standalone: bool = false) -> void
 	status_panel.show()
 	var username = username_edit.text if username_edit.text != "" else "You"
 	if is_host:
-		status_label.text = "Status: " + username + " Connected (Host)"
+		status_label.text = "Status: Connected (Host)\nUser: " + username
 		status_label.add_theme_color_override("font_color", Color.GREEN)
 	else:
 		if connected_to_standalone:
-			status_label.text = "Status: Connected to Server"
+			status_label.text = "Status: Connected to Server\nUser: " + username
 		else:
-			status_label.text = "Status: " + username + " Connected (Client)"
+			status_label.text = "Status: Connected (Client)\nUser: " + username
 		status_label.add_theme_color_override("font_color", Color.GREEN)
 
 func set_disconnected() -> void:

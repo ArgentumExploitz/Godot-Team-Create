@@ -181,11 +181,12 @@ func _attach_presence_overlay(path: String, code_edit: Control):
 func _send_peer_caret(peer_id: int, path: String, line: int, col: int, has_sel: bool, sfl: int, sfc: int, stl: int, stc: int):
 	if not (network and network.is_connected_to_session()):
 		return
+	var my_id = multiplayer.get_unique_id()
 	if network.is_server:
 		for pid in network.peers:
-			if pid != 1:
+			if pid != 1 and pid != my_id:
 				rpc_id(pid, "update_peer_script_caret", peer_id, path, line, col, has_sel, sfl, sfc, stl, stc)
-	else:
+	elif my_id != 1:
 		rpc_id(1, "update_peer_script_caret", peer_id, path, line, col, has_sel, sfl, sfc, stl, stc)
 
 func _on_editor_script_changed(script: Script):
@@ -275,7 +276,7 @@ func _broadcast_script_diff(path: String):
 		for pid in network.peers:
 			if pid != 1:
 				rpc_id(pid, "apply_script_patch", path, start_line, old_count, new_slice, next_rev, checksum)
-	else:
+	elif multiplayer.get_unique_id() != 1:
 		rpc_id(1, "apply_script_patch", path, start_line, old_count, new_slice, next_rev, checksum)
 
 @rpc("any_peer", "reliable")
@@ -632,6 +633,8 @@ class ScriptPresenceOverlay extends Control:
 		if total_lines <= 0:
 			return
 
+		var local_caret_line = code_edit.get_caret_line() if code_edit.has_method("get_caret_line") else -1
+
 		for peer_id in peer_map.keys():
 			var data = peer_map[peer_id]
 			var color = script_sync.network.get_user_color(peer_id) if script_sync.network else Color.WHITE
@@ -639,13 +642,35 @@ class ScriptPresenceOverlay extends Control:
 			if script_sync.network and script_sync.network.peers.has(peer_id):
 				username = script_sync.network.peers[peer_id].get("username", username)
 
+			var target_line = data.get("line", 0)
+			if target_line < 0 or target_line >= total_lines:
+				continue
+
+			# Caret proximity transparency calculation
+			var caret_alpha: float = 1.0
+			if local_caret_line >= 0:
+				var line_dist = abs(target_line - local_caret_line)
+				if line_dist == 0:
+					caret_alpha = 0.05 # 95% transparent on same line
+				elif line_dist == 1:
+					caret_alpha = 0.20 # 80% transparent 1 line away
+				elif line_dist == 2:
+					caret_alpha = 0.40 # 60% transparent 2 lines away
+				elif line_dist == 3:
+					caret_alpha = 0.70 # 30% transparent 3 lines away
+				else:
+					caret_alpha = 1.0  # fully visible further away
+
+			var caret_color = Color(color.r, color.g, color.b, caret_alpha)
+			var badge_text_color = Color(1.0, 1.0, 1.0, caret_alpha)
+
 			# 1. Selection highlighting
 			if data.get("has_sel", false):
 				var sfl = clamp(data.get("sfl", 0), 0, total_lines - 1)
 				var sfc = data.get("sfc", 0)
 				var stl = clamp(data.get("stl", 0), 0, total_lines - 1)
 				var stc = data.get("stc", 0)
-				var sel_color = Color(color.r, color.g, color.b, 0.25)
+				var sel_color = Color(color.r, color.g, color.b, max(0.02, 0.25 * caret_alpha))
 
 				if sfl == stl:
 					var line_len = code_edit.get_line(sfl).length()
@@ -674,10 +699,6 @@ class ScriptPresenceOverlay extends Control:
 							draw_rect(Rect2(x1, r1.position.y, sel_w, line_height), sel_color)
 
 			# 2. Caret line
-			var target_line = data.get("line", 0)
-			if target_line < 0 or target_line >= total_lines:
-				continue
-
 			var line_len = code_edit.get_line(target_line).length()
 			var target_col = clamp(data.get("col", 0), 0, line_len)
 			var caret_rect = code_edit.get_rect_at_line_column(target_line, target_col)
@@ -685,10 +706,10 @@ class ScriptPresenceOverlay extends Control:
 			if caret_rect.position.x >= 0 and caret_rect.position.y >= 0:
 				var caret_x = caret_rect.position.x if target_col == 0 else (caret_rect.position.x + caret_rect.size.x)
 
-				# Draw 2px solid colored bar
-				draw_rect(Rect2(caret_x, caret_rect.position.y, 2, line_height), color)
+				# Draw 2px solid colored bar with proximity transparency
+				draw_rect(Rect2(caret_x, caret_rect.position.y, 2, line_height), caret_color)
 
-				# 3. Name badge pill
+				# 3. Name badge pill with proximity transparency
 				var text_size = font.get_string_size(username, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
 				var pad_x = 4.0
 				var pad_y = 2.0
@@ -698,6 +719,6 @@ class ScriptPresenceOverlay extends Control:
 				badge_pos.y = max(0.0, badge_pos.y)
 
 				# Background pill
-				draw_rect(Rect2(badge_pos, Vector2(badge_w, badge_h)), color)
+				draw_rect(Rect2(badge_pos, Vector2(badge_w, badge_h)), caret_color)
 				# White text
-				draw_string(font, Vector2(badge_pos.x + pad_x, badge_pos.y + pad_y + text_size.y - 2), username, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color.WHITE)
+				draw_string(font, Vector2(badge_pos.x + pad_x, badge_pos.y + pad_y + text_size.y - 2), username, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, badge_text_color)

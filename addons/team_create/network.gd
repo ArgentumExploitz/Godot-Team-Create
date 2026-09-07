@@ -858,7 +858,15 @@ func kick_peer(id: int):
 		tc_print("Kicked peer ", id)
 
 func is_connected_to_session() -> bool:
-	return is_inside_tree() and multiplayer != null and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
+	if not is_inside_tree() or multiplayer == null:
+		return false
+	if not multiplayer.has_multiplayer_peer() or not (multiplayer.multiplayer_peer is ENetMultiplayerPeer):
+		return false
+	if multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED:
+		return false
+	if not is_server and multiplayer.get_unique_id() == 1:
+		return false
+	return true
 
 func update_local_username(new_name: String):
 	_local_username = new_name

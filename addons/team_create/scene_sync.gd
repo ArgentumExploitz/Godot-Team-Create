@@ -937,7 +937,7 @@ func _track_selection():
 				for pid in _get_connected_peers():
 					if pid != my_uid:
 						rpc_id(pid, "update_peer_selection", my_uid, selected_ids, _last_scene_path)
-			else:
+			elif my_uid != 1:
 				rpc_id(1, "update_peer_selection", my_uid, selected_ids, _last_scene_path)
 
 @rpc("any_peer", "reliable")
@@ -2342,7 +2342,7 @@ func _sync_cursor_throttled(delta):
 						for pid in _get_connected_peers():
 							if pid != my_uid:
 								rpc_id(pid, "update_peer_cursor_3d", my_uid, _local_3d_cursor_pos, _last_scene_path)
-					else:
+					elif my_uid != 1:
 						rpc_id(1, "update_peer_cursor_3d", my_uid, _local_3d_cursor_pos, _last_scene_path)
 		elif typeof(data) == TYPE_DICTIONARY and data.get("has_2d", false):
 			var pos_2d = data.get("pos_2d", Vector2.ZERO)
@@ -2354,7 +2354,7 @@ func _sync_cursor_throttled(delta):
 						for pid in _get_connected_peers():
 							if pid != my_uid:
 								rpc_id(pid, "update_peer_cursor_2d", my_uid, _local_2d_cursor_pos, _last_scene_path)
-					else:
+					elif my_uid != 1:
 						rpc_id(1, "update_peer_cursor_2d", my_uid, _local_2d_cursor_pos, _last_scene_path)
 
 
