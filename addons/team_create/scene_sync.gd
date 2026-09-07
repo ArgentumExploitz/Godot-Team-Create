@@ -940,6 +940,48 @@ func _track_selection():
 			elif my_uid != 1:
 				rpc_id(1, "update_peer_selection", my_uid, selected_ids, _last_scene_path)
 
+func _get_2d_node_rect(node: Node) -> Rect2:
+	if node is Control:
+		return Rect2(Vector2.ZERO, node.size)
+
+	if node is CanvasItem:
+		if node.has_method("_edit_use_rect") and node.call("_edit_use_rect"):
+			var r = node.call("_edit_get_rect")
+			if r is Rect2 and r.size != Vector2.ZERO:
+				return r
+
+		if node is Sprite2D:
+			if node.texture:
+				return node.get_rect()
+		elif node is AnimatedSprite2D:
+			if node.sprite_frames and node.sprite_frames.has_animation(node.animation):
+				var tex = node.sprite_frames.get_frame_texture(node.animation, node.frame)
+				if tex:
+					var sz = tex.get_size()
+					var pos = -sz / 2.0 if node.centered else Vector2.ZERO
+					pos += node.offset
+					return Rect2(pos, sz)
+		elif node is CollisionShape2D:
+			if node.shape:
+				return node.shape.get_rect()
+		elif node is CollisionPolygon2D:
+			if node.polygon.size() > 0:
+				var min_p = node.polygon[0]
+				var max_p = node.polygon[0]
+				for p in node.polygon:
+					min_p = min_p.min(p)
+					max_p = max_p.max(p)
+				return Rect2(min_p, max_p - min_p)
+		elif node is Marker2D:
+			var ext = node.gizmo_extents if "gizmo_extents" in node else 10.0
+			return Rect2(-Vector2(ext, ext), Vector2(ext, ext) * 2.0)
+		elif node.has_method("_edit_get_rect"):
+			var r = node.call("_edit_get_rect")
+			if r is Rect2 and r.size != Vector2.ZERO:
+				return r
+
+	return Rect2(Vector2(-10, -10), Vector2(20, 20))
+
 @rpc("any_peer", "reliable")
 func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id() if multiplayer else 0
@@ -1017,14 +1059,22 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 				outline.add_to_group(outline_group_name)
 				outline.add_to_group("TeamCreateSelectionOutlines")
 				outline.color = color
-				outline.color.a = 0.5
+				outline.color.a = 0.15
 
-				if node is Node2D:
-					outline.size = Vector2(50, 50)
-					outline.position = Vector2(-25, -25)
-				else: # Control
-					outline.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_MINSIZE, 0)
-					outline.size = node.size
+				var node_rect = _get_2d_node_rect(node)
+				outline.position = node_rect.position
+				outline.size = node_rect.size
+
+				# Border reference rect for crisp outline
+				var border = ReferenceRect.new()
+				border.name = "OutlineBorder"
+				border.position = Vector2.ZERO
+				border.size = node_rect.size
+				border.border_color = Color(color.r, color.g, color.b, 0.6)
+				border.border_width = 1.0
+				border.editor_only = false
+				border.mouse_filter = Control.MOUSE_FILTER_IGNORE
+				outline.add_child(border)
 
 				# Ensure it doesn't block mouse
 				outline.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2416,16 +2466,22 @@ func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
 
 	var cursor = _get_or_create_peer_cursor_2d(peer_id, current_scene)
 	if cursor:
-		cursor.position = pos
+		cursor.global_position = pos
+		cursor.global_scale = Vector2.ONE
+		cursor.global_rotation = 0.0
 
 # TODO: Implement cursor object pooling instead of repeatedly instantiating/freeing cursor meshes
 func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	var group_name = _get_cursor_3d_group_name(peer_id)
 	var cursor_name = _get_cursor_3d_group_name(peer_id)
-	var nodes = current_scene.get_tree().get_nodes_in_group(group_name)
-	if nodes.size() > 0 and is_instance_valid(nodes[0]):
-		_peer_cursors_3d[peer_id] = nodes[0]
-		return nodes[0]
+	var tree = current_scene.get_tree() if (is_instance_valid(current_scene) and current_scene.is_inside_tree()) else null
+	if tree:
+		var nodes = tree.get_nodes_in_group(group_name)
+		if nodes.size() > 0 and is_instance_valid(nodes[0]):
+			_peer_cursors_3d[peer_id] = nodes[0]
+			return nodes[0]
+	elif _peer_cursors_3d.has(peer_id) and is_instance_valid(_peer_cursors_3d[peer_id]):
+		return _peer_cursors_3d[peer_id]
 
 	var cursor = Node3D.new()
 	cursor.name = cursor_name
@@ -2469,21 +2525,23 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 	var arrow = CylinderMesh.new()
 	arrow.top_radius = 0.0
 	arrow.bottom_radius = 0.08
-	arrow.height = 0.15
+	arrow.height = 0.2
 	arrow_mesh.mesh = arrow
 	arrow_mesh.material_override = mat
-	arrow_mesh.position.z = 0.075
+	arrow_mesh.position.z = 0.05
 	arrow_mesh.rotation.x = -PI / 2.0
 	cursor.add_child(arrow_mesh)
 
-	# The name tag
+	# Username label
 	var label = Label3D.new()
-	label.text = network.peers[peer_id].username if network.peers.has(peer_id) else "Peer " + str(peer_id)
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.no_depth_test = true
-	label.position.y = 0.25
+	var uname = network.get_user_name(peer_id) if (network and network.has_method("get_user_name")) else str(peer_id)
+	label.text = uname
+	label.position.y = 0.45
 	label.position.z = 0.45
+	label.no_depth_test = true
 	label.modulate = color
+	label.font_size = 32
 	cursor.add_child(label)
 
 	current_scene.add_child(cursor)
@@ -2493,10 +2551,14 @@ func _get_or_create_peer_cursor_3d(peer_id: int, current_scene: Node) -> Node3D:
 func _get_or_create_peer_cursor_2d(peer_id: int, current_scene: Node) -> Node2D:
 	var group_name = _get_cursor_2d_group_name(peer_id)
 	var cursor_name = _get_cursor_2d_group_name(peer_id)
-	var nodes = current_scene.get_tree().get_nodes_in_group(group_name)
-	if nodes.size() > 0 and is_instance_valid(nodes[0]):
-		_peer_cursors_2d[peer_id] = nodes[0]
-		return nodes[0]
+	var tree = current_scene.get_tree() if (is_instance_valid(current_scene) and current_scene.is_inside_tree()) else null
+	if tree:
+		var nodes = tree.get_nodes_in_group(group_name)
+		if nodes.size() > 0 and is_instance_valid(nodes[0]):
+			_peer_cursors_2d[peer_id] = nodes[0]
+			return nodes[0]
+	elif _peer_cursors_2d.has(peer_id) and is_instance_valid(_peer_cursors_2d[peer_id]):
+		return _peer_cursors_2d[peer_id]
 
 	var cursor = Node2D.new()
 	cursor.name = cursor_name
@@ -2525,6 +2587,17 @@ func _get_or_create_peer_cursor_2d(peer_id: int, current_scene: Node) -> Node2D:
 	cursor.add_child(outline)
 
 	cursor.add_child(poly)
+
+	var label = Label.new()
+	label.name = "UsernameLabel"
+	var uname = network.get_user_name(peer_id) if (network and network.has_method("get_user_name")) else str(peer_id)
+	label.text = uname
+	label.position = Vector2(14, 10)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.modulate = color
+	label.add_theme_font_size_override("font_size", 11)
+	cursor.add_child(label)
+
 	current_scene.add_child(cursor)
 	_peer_cursors_2d[peer_id] = cursor
 	return cursor
@@ -2562,16 +2635,31 @@ func clear_all_peer_indicators():
 				node.queue_free()
 
 func _update_cursor_username(peer_id: int, username: String):
+	if _peer_cursors_3d.has(peer_id) and is_instance_valid(_peer_cursors_3d[peer_id]):
+		for child in _peer_cursors_3d[peer_id].get_children():
+			if child is Label3D:
+				child.text = username
+
+	if _peer_cursors_2d.has(peer_id) and is_instance_valid(_peer_cursors_2d[peer_id]):
+		for child in _peer_cursors_2d[peer_id].get_children():
+			if child is Label:
+				child.text = username
+
 	var current_scene = _get_edited_scene_root()
-	if not current_scene: return
-	var tree = current_scene.get_tree()
+	var tree = current_scene.get_tree() if (is_instance_valid(current_scene) and current_scene.is_inside_tree()) else (get_tree() if is_inside_tree() else null)
 	if not tree: return
-	var group_name = _get_cursor_3d_group_name(peer_id)
-	var nodes = tree.get_nodes_in_group(group_name)
-	for node in nodes:
+
+	var group_name_3d = _get_cursor_3d_group_name(peer_id)
+	for node in tree.get_nodes_in_group(group_name_3d):
 		if is_instance_valid(node):
 			for child in node.get_children():
 				if child is Label3D:
+					child.text = username
+	var group_name_2d = _get_cursor_2d_group_name(peer_id)
+	for node in tree.get_nodes_in_group(group_name_2d):
+		if is_instance_valid(node):
+			for child in node.get_children():
+				if child is Label:
 					child.text = username
 
 func _find_editor_viewport(node: Node, type_name: String) -> Node:
@@ -2626,12 +2714,14 @@ func _get_local_cursor_data() -> Dictionary:
 		if rect.has_point(mouse_pos):
 			result.has_2d = true
 			var current_scene = _get_edited_scene_root()
-			if current_scene and current_scene is Node2D:
-				result.pos_2d = current_scene.get_global_transform_with_canvas().affine_inverse() * mouse_pos
-			elif current_scene and current_scene is Control:
-				result.pos_2d = current_scene.get_global_transform_with_canvas().affine_inverse() * mouse_pos
+			if is_instance_valid(current_scene):
+				var scene_vp = current_scene.get_viewport()
+				if scene_vp and scene_vp.global_canvas_transform.determinant() != 0:
+					result.pos_2d = scene_vp.global_canvas_transform.affine_inverse() * mouse_pos
+				else:
+					result.pos_2d = mouse_pos
 			else:
-				result.pos_2d = _cached_2d_viewport.get_global_mouse_position()
+				result.pos_2d = mouse_pos
 
 	return result
 

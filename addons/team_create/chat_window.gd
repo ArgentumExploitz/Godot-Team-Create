@@ -33,21 +33,34 @@ class DropTarget extends MarginContainer:
 					if ext in ["png", "jpg", "jpeg", "webp", "svg", "bmp"]:
 						chat_window._send_image(str(f))
 
+# Virtualization constants
+const MAX_RENDERED: int = 40
+const BATCH_SIZE: int = 20
+
 var message_vbox: VBoxContainer
-var pinned_vbox: VBoxContainer
 var scroll_container: ScrollContainer
 var input_edit: LineEdit
 var send_btn: Button
+var attach_btn: Button
 var jump_to_bottom_btn: Button
+var pinned_btn: Button
+var pinned_dialog: AcceptDialog
+var pinned_list_vbox: VBoxContainer
 
-var messages_data = [] # Array of dictionaries
-var current_display_count = 20
+var messages_data = [] # Complete history of message dictionaries
+var rendered_start_idx: int = 0
+var rendered_end_idx: int = 0
+var _is_updating_scroll: bool = false
+var _chat_texture_cache: Dictionary = {}
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_READY:
 		var win = get_window()
 		if win and not win.files_dropped.is_connected(_on_window_files_dropped):
 			win.files_dropped.connect(_on_window_files_dropped)
+	elif what == NOTIFICATION_VISIBILITY_CHANGED:
+		if is_visible_in_tree():
+			call_deferred("_scroll_to_bottom")
 
 func _on_window_files_dropped(files: PackedStringArray) -> void:
 	if not is_visible_in_tree():
@@ -60,7 +73,6 @@ func _on_window_files_dropped(files: PackedStringArray) -> void:
 				_send_image(f)
 
 func _init():
-	# Try to find a global network instance if possible or assign later
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	var drop_target = DropTarget.new()
@@ -69,8 +81,8 @@ func _init():
 	drop_target.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	drop_target.add_theme_constant_override("margin_left", 8)
 	drop_target.add_theme_constant_override("margin_right", 8)
-	drop_target.add_theme_constant_override("margin_top", 8)
-	drop_target.add_theme_constant_override("margin_bottom", 8)
+	drop_target.add_theme_constant_override("margin_top", 6)
+	drop_target.add_theme_constant_override("margin_bottom", 6)
 	add_child(drop_target)
 
 	var main_vbox = VBoxContainer.new()
@@ -78,7 +90,25 @@ func _init():
 	main_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	drop_target.add_child(main_vbox)
 
-	# Scroll container for chat
+	# Top header bar with title and Pinned Messages button
+	var top_bar = HBoxContainer.new()
+	top_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	main_vbox.add_child(top_bar)
+
+	var title_lbl = Label.new()
+	title_lbl.text = "💬 Team Chat"
+	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7, 0.8))
+	top_bar.add_child(title_lbl)
+
+	pinned_btn = Button.new()
+	pinned_btn.text = "📌 Pinned (0)"
+	pinned_btn.tooltip_text = "View pinned messages"
+	pinned_btn.flat = true
+	pinned_btn.pressed.connect(_on_pinned_btn_pressed)
+	top_bar.add_child(pinned_btn)
+
+	# Scroll container for chat messages
 	var scroll_overlay = MarginContainer.new()
 	scroll_overlay.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll_overlay.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -93,7 +123,7 @@ func _init():
 	jump_to_bottom_btn = Button.new()
 	jump_to_bottom_btn.text = "V"
 	jump_to_bottom_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
-	jump_to_bottom_btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	jump_to_bottom_btn.size_flags_vertical = Control.SIZE_SHRINK_END
 	jump_to_bottom_btn.pressed.connect(_on_jump_to_bottom_pressed)
 	jump_to_bottom_btn.hide()
 	scroll_overlay.add_child(jump_to_bottom_btn)
@@ -104,27 +134,18 @@ func _init():
 	message_vbox.alignment = BoxContainer.ALIGNMENT_END
 	scroll_container.add_child(message_vbox)
 
-	# Detect scrolling to top
+	# Detect scrolling
 	scroll_container.get_v_scroll_bar().value_changed.connect(_on_scroll_changed)
 
-	var sep1 = HSeparator.new()
-	main_vbox.add_child(sep1)
-
-	# Pinned messages container
-	pinned_vbox = VBoxContainer.new()
-	pinned_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	main_vbox.add_child(pinned_vbox)
-
-
-	var sep2 = HSeparator.new()
-	main_vbox.add_child(sep2)
+	var sep = HSeparator.new()
+	main_vbox.add_child(sep)
 
 	# Input area
 	var input_hbox = HBoxContainer.new()
 	input_hbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	main_vbox.add_child(input_hbox)
 
-	var attach_btn = Button.new()
+	attach_btn = Button.new()
 	attach_btn.text = "📷"
 	attach_btn.tooltip_text = "Attach & send image file"
 	attach_btn.pressed.connect(_on_attach_pressed)
@@ -141,7 +162,77 @@ func _init():
 	send_btn.pressed.connect(_on_send_pressed)
 	input_hbox.add_child(send_btn)
 
+	# Separate Pinned Messages Dialog
+	pinned_dialog = AcceptDialog.new()
+	pinned_dialog.title = "📌 Pinned Messages"
+	pinned_dialog.ok_button_text = "Close"
+	pinned_dialog.dialog_hide_on_ok = true
+
+	var pd_margin = MarginContainer.new()
+	pd_margin.custom_minimum_size = Vector2(440, 280)
+	pd_margin.add_theme_constant_override("margin_left", 8)
+	pd_margin.add_theme_constant_override("margin_right", 8)
+	pd_margin.add_theme_constant_override("margin_top", 8)
+	pd_margin.add_theme_constant_override("margin_bottom", 8)
+
+	var pd_scroll = ScrollContainer.new()
+	pd_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pd_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	pd_margin.add_child(pd_scroll)
+
+	pinned_list_vbox = VBoxContainer.new()
+	pinned_list_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pinned_list_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	pd_scroll.add_child(pinned_list_vbox)
+
+	pinned_dialog.add_child(pd_margin)
+	add_child(pinned_dialog)
+
+func _on_pinned_btn_pressed() -> void:
+	_refresh_pinned_dialog()
+	pinned_dialog.popup_centered(Vector2i(480, 320))
+
+func _refresh_pinned_dialog() -> void:
+	if not pinned_list_vbox:
+		return
+	for c in pinned_list_vbox.get_children():
+		c.queue_free()
+
+	var pinned_msgs = []
+	for m in messages_data:
+		if m.get("pinned", false):
+			pinned_msgs.append(m)
+
+	if pinned_msgs.is_empty():
+		var empty_lbl = Label.new()
+		empty_lbl.text = "No pinned messages yet."
+		empty_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		empty_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		pinned_list_vbox.add_child(empty_lbl)
+		return
+
+	for m in pinned_msgs:
+		var node = _create_message_node(m, true)
+		pinned_list_vbox.add_child(node)
+
+func _update_pinned_count() -> void:
+	var count = 0
+	for m in messages_data:
+		if m.get("pinned", false):
+			count += 1
+	if pinned_btn:
+		pinned_btn.text = "📌 Pinned (%d)" % count
+	if pinned_dialog and pinned_dialog.visible:
+		_refresh_pinned_dialog()
+
 func _on_attach_pressed() -> void:
+	if network and ("chat_images_enabled" in network) and not network.chat_images_enabled:
+		if network.has_method("tc_print_rich"):
+			network.tc_print_rich("[color=orange]Chat images are currently disabled on this server. Use /chatimgs true to enable.[/color]")
+		elif network.has_method("tc_print"):
+			network.tc_print("Chat images are currently disabled on this server. Use /chatimgs true to enable.")
+		return
+
 	var fd = FileDialog.new()
 	fd.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	fd.access = FileDialog.ACCESS_FILESYSTEM
@@ -158,6 +249,12 @@ func _on_attach_pressed() -> void:
 
 func _send_image(path: String):
 	if network:
+		if ("chat_images_enabled" in network) and not network.chat_images_enabled:
+			if network.has_method("tc_print_rich"):
+				network.tc_print_rich("[color=orange]Chat images are currently disabled on this server. Use /chatimgs true to enable.[/color]")
+			elif network.has_method("tc_print"):
+				network.tc_print("Chat images are currently disabled on this server. Use /chatimgs true to enable.")
+			return
 		network.send_chat_message("", path)
 
 func _on_input_submitted(text: String):
@@ -189,52 +286,129 @@ func add_command_response(response_bbcode: String):
 	add_message(msg)
 
 func _on_jump_to_bottom_pressed():
-	var scrollbar = scroll_container.get_v_scroll_bar()
-	scrollbar.value = scrollbar.max_value
+	jump_to_bottom_btn.text = "V"
+	jump_to_bottom_btn.hide()
+	if rendered_end_idx < messages_data.size():
+		_rebuild_rendered_messages(true)
+	else:
+		call_deferred("_scroll_to_bottom")
 
 func _on_scroll_changed(value: float):
-	if value <= 0 and current_display_count < messages_data.size():
-		current_display_count += 20
-		_refresh_messages(false)
+	if _is_updating_scroll:
+		return
 
 	var scrollbar = scroll_container.get_v_scroll_bar()
-	if value >= scrollbar.max_value - scrollbar.page - 1.0:
+	var at_bottom = value >= (scrollbar.max_value - scrollbar.page - 25.0)
+	if at_bottom:
+		jump_to_bottom_btn.text = "V"
 		jump_to_bottom_btn.hide()
 	else:
 		jump_to_bottom_btn.show()
 
+	# Scroll to top: load older messages
+	if value <= 20.0 and rendered_start_idx > 0:
+		_load_older_messages()
+
+	# Scroll towards bottom: load newer messages if window is not at end
+	elif at_bottom and rendered_end_idx < messages_data.size():
+		_load_newer_messages()
+
+func _load_older_messages():
+	if rendered_start_idx <= 0 or _is_updating_scroll or not is_inside_tree():
+		return
+	_is_updating_scroll = true
+	var load_count = min(BATCH_SIZE, rendered_start_idx)
+	var new_start = rendered_start_idx - load_count
+	var old_h = message_vbox.size.y
+
+	for i in range(rendered_start_idx - 1, new_start - 1, -1):
+		var node = _create_message_node(messages_data[i])
+		message_vbox.add_child(node)
+		message_vbox.move_child(node, 0)
+	rendered_start_idx = new_start
+
+	# Prune from bottom if exceeded MAX_RENDERED
+	while message_vbox.get_child_count() > MAX_RENDERED and rendered_end_idx > (rendered_start_idx + BATCH_SIZE):
+		var last_idx = message_vbox.get_child_count() - 1
+		var last = message_vbox.get_child(last_idx)
+		message_vbox.remove_child(last)
+		last.queue_free()
+		rendered_end_idx -= 1
+
+	await get_tree().process_frame
+	if is_instance_valid(scroll_container) and is_instance_valid(message_vbox):
+		var diff = message_vbox.size.y - old_h
+		var scrollbar = scroll_container.get_v_scroll_bar()
+		if scrollbar:
+			scrollbar.value += diff
+	_is_updating_scroll = false
+
+func _load_newer_messages():
+	if rendered_end_idx >= messages_data.size() or _is_updating_scroll or not is_inside_tree():
+		return
+	_is_updating_scroll = true
+	var load_count = min(BATCH_SIZE, messages_data.size() - rendered_end_idx)
+	var new_end = rendered_end_idx + load_count
+
+	for i in range(rendered_end_idx, new_end):
+		var node = _create_message_node(messages_data[i])
+		message_vbox.add_child(node)
+	rendered_end_idx = new_end
+
+	# Prune from top if exceeded MAX_RENDERED
+	while message_vbox.get_child_count() > MAX_RENDERED and rendered_start_idx < (rendered_end_idx - BATCH_SIZE):
+		var first = message_vbox.get_child(0)
+		message_vbox.remove_child(first)
+		first.queue_free()
+		rendered_start_idx += 1
+
+	await get_tree().process_frame
+	_is_updating_scroll = false
+
 func add_message(msg_data: Dictionary):
 	var scrollbar = scroll_container.get_v_scroll_bar()
-	var is_at_bottom = scrollbar.value >= scrollbar.max_value - scrollbar.page - 1.0
+	var is_at_bottom = scrollbar.value >= (scrollbar.max_value - scrollbar.page - 25.0)
 
 	if not messages_data.has(msg_data):
 		messages_data.append(msg_data)
-	_refresh_messages(is_at_bottom)
+
+	if msg_data.get("pinned", false):
+		_update_pinned_count()
+
+	# If viewing the bottom of the chat, append directly to active window
+	if is_at_bottom or rendered_end_idx == (messages_data.size() - 1):
+		var node = _create_message_node(msg_data)
+		message_vbox.add_child(node)
+		rendered_end_idx = messages_data.size()
+
+		# Prune top child if window capacity exceeded
+		if message_vbox.get_child_count() > MAX_RENDERED:
+			var oldest = message_vbox.get_child(0)
+			message_vbox.remove_child(oldest)
+			oldest.queue_free()
+			rendered_start_idx += 1
+
+		call_deferred("_scroll_to_bottom")
+	else:
+		# User is scrolled up: notify with jump button badge without allocating heavy nodes
+		jump_to_bottom_btn.text = "V (New)"
+		jump_to_bottom_btn.show()
 
 func set_messages(history: Array):
 	messages_data = history
-	current_display_count = 20
-	_refresh_messages(true)
+	_update_pinned_count()
+	_rebuild_rendered_messages(true)
 
-func _refresh_messages(scroll_to_bottom: bool = false):
+func _rebuild_rendered_messages(scroll_to_bottom: bool = false):
 	for c in message_vbox.get_children():
 		c.queue_free()
-	for c in pinned_vbox.get_children():
-		c.queue_free()
 
-	var start_idx = max(0, messages_data.size() - current_display_count)
+	var total = messages_data.size()
+	rendered_start_idx = max(0, total - BATCH_SIZE)
+	rendered_end_idx = total
 
-	var pinned_msgs = []
-	for m in messages_data:
-		if m.get("pinned", false):
-			pinned_msgs.append(m)
-
-	for m in pinned_msgs:
-		pinned_vbox.add_child(_create_message_node(m, true))
-
-	for i in range(start_idx, messages_data.size()):
-		if not messages_data[i].get("pinned", false):
-			message_vbox.add_child(_create_message_node(messages_data[i], false))
+	for i in range(rendered_start_idx, rendered_end_idx):
+		message_vbox.add_child(_create_message_node(messages_data[i]))
 
 	if scroll_to_bottom:
 		call_deferred("_scroll_to_bottom")
@@ -242,14 +416,19 @@ func _refresh_messages(scroll_to_bottom: bool = false):
 func _scroll_to_bottom():
 	if not is_inside_tree() or get_tree() == null:
 		return
+	# Await 2 frames to allow ScrollContainer and children layout calculations to settle
+	await get_tree().process_frame
 	await get_tree().process_frame
 	if not is_inside_tree() or not scroll_container or not is_instance_valid(scroll_container):
 		return
 	var scrollbar = scroll_container.get_v_scroll_bar()
 	if scrollbar and is_instance_valid(scrollbar):
 		scrollbar.value = scrollbar.max_value
+		if jump_to_bottom_btn:
+			jump_to_bottom_btn.text = "V"
+			jump_to_bottom_btn.hide()
 
-func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
+func _create_message_node(m: Dictionary, is_in_pinned_dialog: bool = false) -> Control:
 	var type = m.get("type", "text")
 
 	if type == "join":
@@ -308,16 +487,17 @@ func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
 	if color is Color:
 		color = color.to_html(false)
 	elif color is String and color.length() > 6:
-		color = color.left(6) # ensure we just have RRGGBB if it was RRGGBBAA
+		color = color.left(6)
+
+	var pin_badge = "[color=yellow]📌[/color] " if (m.get("pinned", false) and not is_in_pinned_dialog) else ""
 
 	if type == "text":
 		var text = m.get("text", "")
-		# Sanitize basic tags to avoid malicious inputs breaking bbcode formatting
 		text = text.replace("[", "[lb]")
-		rtl.text = "[color=#" + color + "][b]" + sender_name + ":[/b][/color] " + text
+		rtl.text = pin_badge + "[color=#" + color + "][b]" + sender_name + ":[/b][/color] " + text
 		content_vbox.add_child(rtl)
 	elif type == "image":
-		rtl.text = "[color=#" + color + "][b]" + sender_name + ":[/b][/color]"
+		rtl.text = pin_badge + "[color=#" + color + "][b]" + sender_name + ":[/b][/color]"
 		content_vbox.add_child(rtl)
 
 		var img_hash = m.get("image_hash", "")
@@ -328,16 +508,20 @@ func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
 		elif path != "":
 			file_path = path
 
-		var img = null
-		if file_path != "" and FileAccess.file_exists(file_path):
-			img = Image.load_from_file(file_path)
-		elif file_path != "" and ResourceLoader.exists(file_path):
-			var res = load(file_path)
-			if res is Texture2D:
-				img = res.get_image()
+		var tex = _chat_texture_cache.get(file_path, null)
+		if not tex and file_path != "":
+			var img = null
+			if FileAccess.file_exists(file_path):
+				img = Image.load_from_file(file_path)
+			elif ResourceLoader.exists(file_path):
+				var res = load(file_path)
+				if res is Texture2D:
+					img = res.get_image()
+			if img and not img.is_empty():
+				tex = ImageTexture.create_from_image(img)
+				_chat_texture_cache[file_path] = tex
 
-		if img and not img.is_empty():
-			var tex = ImageTexture.create_from_image(img)
+		if tex:
 			var tex_rect = TextureRect.new()
 			tex_rect.texture = tex
 			tex_rect.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
@@ -358,26 +542,34 @@ func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
 			if network and network.has_method("get_chat_image_path") and img_hash != "":
 				network.get_chat_image_path(img_hash)
 			var fallback_lbl = Label.new()
-			fallback_lbl.text = "[Loading image: " + (img_hash.substr(0, 8) if img_hash != "" else path.get_file()) + "...]"
+			fallback_lbl.text = "[Image: " + (img_hash.substr(0, 8) if img_hash != "" else path.get_file()) + "]"
 			fallback_lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 			content_vbox.add_child(fallback_lbl)
 
-	var pin_btn = Button.new()
-	pin_btn.text = "📌" if m.get("pinned", false) else "📍"
-	pin_btn.flat = true
-	pin_btn.tooltip_text = "Unpin" if m.get("pinned", false) else "Pin message"
-	pin_btn.add_theme_font_size_override("font_size", 10)
-	pin_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
-	pin_btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	pin_btn.pressed.connect(func():
-		if network:
-			network.toggle_pin_message(m["id"])
-	)
-	mcontainer.add_child(pin_btn)
+	# Pin button
+	if m.has("id") and m["id"] != -1:
+		var pin_btn = Button.new()
+		if is_in_pinned_dialog:
+			pin_btn.text = "Unpin"
+			pin_btn.tooltip_text = "Remove from pinned messages"
+		else:
+			pin_btn.text = "📌" if m.get("pinned", false) else "📍"
+			pin_btn.tooltip_text = "Unpin" if m.get("pinned", false) else "Pin message"
+		pin_btn.flat = true
+		pin_btn.add_theme_font_size_override("font_size", 10)
+		pin_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+		pin_btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+		var msg_id = m["id"]
+		pin_btn.pressed.connect(func():
+			if network:
+				network.toggle_pin_message(msg_id)
+		)
+		mcontainer.add_child(pin_btn)
 
 	return mcontainer
 
 func refresh_images():
+	_chat_texture_cache.clear()
 	var scrollbar = scroll_container.get_v_scroll_bar()
-	var is_at_bottom = scrollbar.value >= scrollbar.max_value - scrollbar.page - 1.0
-	_refresh_messages(is_at_bottom)
+	var is_at_bottom = scrollbar.value >= (scrollbar.max_value - scrollbar.page - 25.0)
+	_rebuild_rendered_messages(is_at_bottom)
