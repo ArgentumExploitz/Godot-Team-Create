@@ -40,6 +40,12 @@ var chat_locked: bool = false
 var chat_images_enabled: bool = true
 var muted_users = []
 var admins = []
+var host_auth_token: String = ""
+var host_peer_ids: Array[int] = []
+var _local_server_pid: int = 0
+var _local_host_token: String = ""
+var _current_command_sender: int = 0
+var _command_output_buffer: Array[String] = []
 
 var max_file_size: int = 0
 
@@ -57,6 +63,8 @@ func _get_editor_interface():
 
 func tc_print(msg: String, arg1="", arg2="", arg3=""):
 	var full_msg = msg + str(arg1) + str(arg2) + str(arg3)
+	if _current_command_sender != 0:
+		_command_output_buffer.append(full_msg)
 	if timeprint_enabled:
 		var time = Time.get_time_string_from_system()
 		print("<" + time + "> " + full_msg)
@@ -65,6 +73,8 @@ func tc_print(msg: String, arg1="", arg2="", arg3=""):
 
 func tc_print_rich(msg: String, arg1="", arg2="", arg3=""):
 	var full_msg = msg + str(arg1) + str(arg2) + str(arg3)
+	if _current_command_sender != 0:
+		_command_output_buffer.append(full_msg)
 	if timeprint_enabled:
 		var time = Time.get_time_string_from_system()
 		print_rich("[color=gray]<" + time + ">[/color] " + full_msg)
@@ -172,11 +182,13 @@ func _configure_enet_peer(id: int):
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_kill_local_server()
 		if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
 			scene_sync.flush_all_scenes_to_disk()
 		_save_chat_history()
 
 func _exit_tree():
+	_kill_local_server()
 	if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
 		scene_sync.flush_all_scenes_to_disk()
 	_save_chat_history()
@@ -774,6 +786,7 @@ func _deferred_stop():
 		scene_sync.flush_all_scenes_to_disk()
 	if file_sync and file_sync.has_method("stop_http_server"):
 		file_sync.stop_http_server()
+	_kill_local_server()
 	disconnect_peer()
 	_save_chat_history()
 
@@ -800,6 +813,70 @@ func update_local_username(new_name: String):
 		request_username_change(my_id, _local_username)
 	elif my_id != 1:
 		rpc_id(1, "request_username_change", my_id, _local_username)
+
+func _kill_local_server():
+	if _local_server_pid > 0:
+		OS.kill(_local_server_pid)
+		tc_print("Stopped local server process (PID: ", _local_server_pid, ")")
+		_local_server_pid = 0
+
+func _ensure_server_files():
+	var exporter = load("res://addons/team_create/server_exporter.gd")
+	if not FileAccess.file_exists("res://addons/team_create/server.gd"):
+		if exporter:
+			var f = FileAccess.open("res://addons/team_create/server.gd", FileAccess.WRITE)
+			if f:
+				f.store_string(exporter.SERVER_SCRIPT_TEMPLATE)
+				f.close()
+	if not FileAccess.file_exists("res://addons/team_create/server.tscn"):
+		if exporter:
+			var f = FileAccess.open("res://addons/team_create/server.tscn", FileAccess.WRITE)
+			if f:
+				f.store_string(exporter.TSCN_TEMPLATE)
+				f.close()
+
+func host_lan_server(raw_ip: String = ""):
+	_kill_local_server()
+	disconnect_peer()
+
+	var target_port = DEFAULT_PORT
+	var trimmed = raw_ip.strip_edges()
+	if ":" in trimmed:
+		var parts = trimmed.split(":")
+		if parts.size() > 1 and parts[1].strip_edges().is_valid_int():
+			var p = parts[1].strip_edges().to_int()
+			if p > 0 and p <= 65535:
+				target_port = p
+
+	_ensure_server_files()
+
+	_local_host_token = str(Time.get_ticks_usec()) + "_" + str(randi())
+
+	var exec_path = OS.get_executable_path()
+	var project_dir = ProjectSettings.globalize_path("res://")
+
+	var args: PackedStringArray = [
+		"--path", project_dir,
+		"--headless",
+		"--scene", "res://addons/team_create/server.tscn",
+		"--",
+		"--port", str(target_port),
+		"--host-token", _local_host_token
+	]
+
+	var pid = OS.create_process(exec_path, args, false)
+	if pid <= 0:
+		tc_print_rich("[color=red]Failed to launch dedicated server process.[/color]")
+		if ui and ui.has_method("show_error"):
+			ui.show_error("Launch Failed", "Failed to start the background server process.")
+		return
+
+	_local_server_pid = pid
+	tc_print_rich("[color=green]Started local server process (PID: " + str(pid) + ") on port " + str(target_port) + ".[/color]")
+
+	await get_tree().create_timer(1.2).timeout
+
+	join_server("127.0.0.1:" + str(target_port))
 
 func host_server():
 	disconnect_peer()
@@ -972,6 +1049,7 @@ func _report_closed_firewall_ports(closed_ports: Array, fw_tool: String) -> void
 	tc_print_rich("[color=yellow]==================================================[/color]")
 
 func disconnect_peer():
+	_kill_local_server()
 	var was_connected = false
 	if is_inside_tree() and multiplayer:
 		was_connected = multiplayer.has_multiplayer_peer()
@@ -1105,6 +1183,8 @@ func _on_connected_to_server():
 		var my_id = multiplayer.get_unique_id()
 		if not is_server and my_id != 1:
 			rpc_id(1, "request_username_change", my_id, _local_username if _local_username != "" else "")
+			if _local_host_token != "":
+				rpc_id(1, "authenticate_host", _local_host_token)
 
 func _request_scene_from_server():
 	var ei = _get_editor_interface()
@@ -1514,6 +1594,89 @@ func receive_cached_chat_image(img_hash: String, bytes: PackedByteArray):
 		f.close()
 		_update_local_chat_ui()
 
+func is_peer_host_or_admin(peer_id: int) -> bool:
+	if peer_id == 1:
+		return true
+	if host_peer_ids.has(peer_id):
+		return true
+	if admins.has(peer_id):
+		return true
+	if peers.has(peer_id) and admins.has(peers[peer_id]["username"]):
+		return true
+	if not is_inside_tree() or multiplayer == null:
+		return false
+	var enet: ENetMultiplayerPeer = null
+	if peer is ENetMultiplayerPeer and peer.get_connection_status() != MultiplayerPeer.CONNECTION_DISCONNECTED:
+		enet = peer
+	elif multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer is ENetMultiplayerPeer and multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_DISCONNECTED:
+		enet = multiplayer.multiplayer_peer
+	if enet:
+		var p = enet.get_peer(peer_id)
+		if p:
+			var ip = p.get_remote_address()
+			if ip in ["127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"]:
+				return true
+	return false
+
+@rpc("any_peer", "reliable")
+func authenticate_host(token: String):
+	if not is_inside_tree() or multiplayer == null:
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	if not is_server or sender_id <= 0:
+		return
+	if (host_auth_token != "" and token == host_auth_token) or is_peer_host_or_admin(sender_id):
+		if not host_peer_ids.has(sender_id):
+			host_peer_ids.append(sender_id)
+		if not admins.has(sender_id):
+			admins.append(sender_id)
+		tc_print_rich("[color=green]Peer " + str(sender_id) + " authenticated as host.[/color]")
+
+func execute_chat_command(command_str: String):
+	if not is_connected_to_session():
+		if chat_window and chat_window.has_method("add_command_response"):
+			chat_window.add_command_response("[color=red]Not connected to any server.[/color]")
+		return
+	var my_id = multiplayer.get_unique_id()
+	if is_server:
+		if is_peer_host_or_admin(my_id):
+			_execute_and_reply_command(command_str, my_id)
+		else:
+			receive_command_response("[color=red]You do not have permission to run server commands.[/color]")
+	elif my_id != 1 and my_id != 0:
+		rpc_id(1, "request_server_command", command_str)
+
+@rpc("any_peer", "reliable")
+func request_server_command(command_str: String):
+	if not is_inside_tree() or multiplayer == null:
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	if not is_server:
+		return
+	if not is_peer_host_or_admin(sender_id):
+		rpc_id(sender_id, "receive_command_response", "[color=red]You do not have permission to run server commands.[/color]")
+		return
+	_execute_and_reply_command(command_str, sender_id)
+
+func _execute_and_reply_command(command_str: String, sender_id: int):
+	_current_command_sender = sender_id
+	_command_output_buffer.clear()
+	_process_console_command(command_str)
+	var reply = "\n".join(_command_output_buffer)
+	_current_command_sender = 0
+	_command_output_buffer.clear()
+	if reply == "":
+		reply = "[color=gray](Command executed)[/color]"
+	if sender_id == 1 or (is_inside_tree() and multiplayer and sender_id == multiplayer.get_unique_id()):
+		receive_command_response(reply)
+	else:
+		rpc_id(sender_id, "receive_command_response", reply)
+
+@rpc("reliable")
+func receive_command_response(response_bbcode: String):
+	if chat_window and chat_window.has_method("add_command_response"):
+		chat_window.add_command_response(response_bbcode)
+
 func send_chat_message(text: String, image_path: String = ""):
 	if not is_connected_to_session():
 		tc_print("Cannot send message. Not connected to a server.")
@@ -1526,17 +1689,16 @@ func send_chat_message(text: String, image_path: String = ""):
 
 	if is_server:
 		if text.begins_with("/"):
-			if is_standalone_server or admins.has(my_id):
-				_process_console_command(text)
-				return
-			else:
-				tc_print("You do not have permission to use admin commands.")
-				return
+			execute_chat_command(text)
+			return
 		if not chat_locked:
 			_process_new_chat_message(my_id, text)
 	else:
 		if my_id == 1 or my_id == 0:
 			tc_print("Cannot send message. Not connected to a server.")
+			return
+		if text.begins_with("/"):
+			execute_chat_command(text)
 			return
 		rpc_id(1, "request_chat_message", text)
 
@@ -1692,8 +1854,10 @@ func request_chat_message(text: String, legacy_image_path: String = ""):
 	var sender_id = multiplayer.get_remote_sender_id()
 
 	if text.begins_with("/"):
-		if admins.has(sender_id):
-			_process_console_command(text)
+		if is_peer_host_or_admin(sender_id):
+			_execute_and_reply_command(text, sender_id)
+		else:
+			rpc_id(sender_id, "receive_command_response", "[color=red]You do not have permission to run server commands.[/color]")
 		return
 
 	if chat_locked: return

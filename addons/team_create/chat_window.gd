@@ -166,9 +166,27 @@ func _on_input_submitted(text: String):
 func _on_send_pressed():
 	var text = input_edit.text.strip_edges()
 	if text != "":
-		if network:
-			network.send_chat_message(text, "")
+		if text.begins_with("/"):
+			var echo_msg = {
+				"id": -1,
+				"type": "command_echo",
+				"text": text
+			}
+			add_message(echo_msg)
+			if network and network.has_method("execute_chat_command"):
+				network.execute_chat_command(text)
+		else:
+			if network:
+				network.send_chat_message(text, "")
 		input_edit.text = ""
+
+func add_command_response(response_bbcode: String):
+	var msg = {
+		"id": -1,
+		"type": "command_response",
+		"text": response_bbcode
+	}
+	add_message(msg)
 
 func _on_jump_to_bottom_pressed():
 	var scrollbar = scroll_container.get_v_scroll_bar()
@@ -235,6 +253,34 @@ func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.5, 0.5))
 		return lbl
+
+	if type == "command_echo":
+		var mcontainer = MarginContainer.new()
+		mcontainer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		mcontainer.mouse_filter = Control.MOUSE_FILTER_PASS
+		var rtl = RichTextLabel.new()
+		rtl.bbcode_enabled = true
+		rtl.fit_content = true
+		rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		rtl.selection_enabled = true
+		rtl.mouse_filter = Control.MOUSE_FILTER_PASS
+		rtl.text = "[color=#888888]> " + m.get("text", "").replace("[", "[lb]") + "[/color]"
+		mcontainer.add_child(rtl)
+		return mcontainer
+
+	if type == "command_response":
+		var mcontainer = MarginContainer.new()
+		mcontainer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		mcontainer.mouse_filter = Control.MOUSE_FILTER_PASS
+		var rtl = RichTextLabel.new()
+		rtl.bbcode_enabled = true
+		rtl.fit_content = true
+		rtl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		rtl.selection_enabled = true
+		rtl.mouse_filter = Control.MOUSE_FILTER_PASS
+		rtl.text = m.get("text", "")
+		mcontainer.add_child(rtl)
+		return mcontainer
 
 	var mcontainer = MarginContainer.new()
 	mcontainer.size_flags_horizontal = Control.SIZE_EXPAND_FILL

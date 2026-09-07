@@ -179,8 +179,8 @@ func _build_ui() -> void:
 	lan_container.add_child(lan_btn_hbox)
 
 	host_btn = Button.new()
-	host_btn.text = "Host"
-	host_btn.tooltip_text = "Start a new LAN server on port 25567."
+	host_btn.text = "Host LAN"
+	host_btn.tooltip_text = "Starts server on LAN and automatically connects you to it."
 	host_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	host_btn.pressed.connect(_on_host_pressed)
@@ -392,7 +392,7 @@ func _on_ip_changed(new_text: String) -> void:
 
 func _on_host_pressed() -> void:
 	if network:
-		network.host_server()
+		network.host_lan_server(ip_edit.text)
 
 func _on_join_pressed() -> void:
 	if network:

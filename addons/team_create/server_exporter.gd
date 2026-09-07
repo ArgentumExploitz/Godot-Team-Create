@@ -95,6 +95,15 @@ func _ready():
 	network.name = "TeamCreateNetwork"
 	network.is_standalone_server = true
 
+	# Check command line user args (after '--')
+	var user_args = OS.get_cmdline_user_args()
+	for i in range(user_args.size()):
+		if user_args[i] == "--port" and i + 1 < user_args.size() and user_args[i + 1].is_valid_int():
+			network.PORT = user_args[i + 1].to_int()
+			network.HTTP_PORT = network.PORT
+		elif user_args[i] == "--host-token" and i + 1 < user_args.size():
+			network.host_auth_token = user_args[i + 1]
+
 	var dummy_plugin = DummyEditorPlugin.new()
 	dummy_plugin.name = "DummyPlugin"
 	add_child(dummy_plugin)
