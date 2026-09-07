@@ -5,6 +5,7 @@ var dock: Control
 var chat_dock: Control
 var network: Node
 var export_plugin: EditorExportPlugin = null
+var _disk_changed_dialogs: Array[ConfirmationDialog] = []
 
 func _enter_tree() -> void:
 	# Register automated export cleaner to ensure builds contain zero traces of Team Create
@@ -53,10 +54,15 @@ func _enter_tree() -> void:
 		if not scene_closed.is_connected(_on_scene_closed):
 			scene_closed.connect(_on_scene_closed)
 
+	# Intercept and suppress external file modification dialog while connected to session
+	_setup_disk_changed_interceptor()
+
 	# Check for updates on load
 	check_for_updates()
 
 func _exit_tree() -> void:
+	_cleanup_disk_changed_interceptor()
+
 	if export_plugin and has_method("remove_export_plugin"):
 		remove_export_plugin(export_plugin)
 		export_plugin = null
@@ -81,6 +87,8 @@ func _exit_tree() -> void:
 			if cur_scn and cur_scn.scene_file_path != "":
 				network.scene_sync.save_current_camera_for_scene(cur_scn.scene_file_path, true)
 			network.scene_sync._save_camera_cache()
+		if network.script_sync:
+			network.script_sync.clear_all()
 		if network.get_parent():
 			network.get_parent().remove_child(network)
 		network.queue_free()
@@ -274,6 +282,105 @@ func _force_close_all_scenes() -> void:
 	if scene_tabs:
 		for i in range(scene_tabs.get_tab_count() - 1, -1, -1):
 			scene_tabs.emit_signal("tab_close_pressed", i)
+
+
+# ==============================================================================
+# External File Modification Dialog Interceptor
+# Auto-suppresses "Files have been modified outside Godot" popup while connected
+# ==============================================================================
+func _setup_disk_changed_interceptor() -> void:
+	if not Engine.is_editor_hint():
+		return
+	call_deferred("_hook_disk_changed_dialogs")
+
+func _hook_disk_changed_dialogs() -> void:
+	var found = _find_all_disk_changed_dialogs()
+	for dlg in found:
+		if dlg in _disk_changed_dialogs:
+			continue
+		_disk_changed_dialogs.append(dlg)
+		var cb_about = Callable(self, "_on_disk_changed_about_to_popup").bind(dlg)
+		if not dlg.about_to_popup.is_connected(cb_about):
+			dlg.about_to_popup.connect(cb_about)
+		var cb_vis = Callable(self, "_on_disk_changed_visibility_changed").bind(dlg)
+		if not dlg.visibility_changed.is_connected(cb_vis):
+			dlg.visibility_changed.connect(cb_vis)
+
+	# If fewer than 2 dialogs (scene and script) found, retry periodically until both are ready
+	if is_inside_tree() and _disk_changed_dialogs.size() < 2:
+		get_tree().create_timer(1.0).timeout.connect(_hook_disk_changed_dialogs)
+
+func _cleanup_disk_changed_interceptor() -> void:
+	for dlg in _disk_changed_dialogs:
+		if is_instance_valid(dlg):
+			var cb_about = Callable(self, "_on_disk_changed_about_to_popup").bind(dlg)
+			if dlg.about_to_popup.is_connected(cb_about):
+				dlg.about_to_popup.disconnect(cb_about)
+			var cb_vis = Callable(self, "_on_disk_changed_visibility_changed").bind(dlg)
+			if dlg.visibility_changed.is_connected(cb_vis):
+				dlg.visibility_changed.disconnect(cb_vis)
+	_disk_changed_dialogs.clear()
+
+func _find_all_disk_changed_dialogs() -> Array[ConfirmationDialog]:
+	var result: Array[ConfirmationDialog] = []
+	if not has_method("get_editor_interface"):
+		return result
+	var ei = get_editor_interface()
+	if not ei or not is_instance_valid(ei):
+		return result
+
+	var candidates: Array[Node] = []
+	var base = ei.get_base_control()
+	if base and is_instance_valid(base):
+		candidates.append(base)
+	if ei.has_method("get_script_editor"):
+		var se = ei.get_script_editor()
+		if se and is_instance_valid(se):
+			candidates.append(se)
+	if is_inside_tree() and get_tree().root:
+		candidates.append(get_tree().root)
+
+	for parent in candidates:
+		for child in parent.get_children():
+			if _is_disk_changed_dialog(child) and not child in result:
+				result.append(child as ConfirmationDialog)
+			for sub in child.get_children():
+				if _is_disk_changed_dialog(sub) and not sub in result:
+					result.append(sub as ConfirmationDialog)
+
+	return result
+
+func _is_disk_changed_dialog(node: Node) -> bool:
+	if not (node is ConfirmationDialog):
+		return false
+	var dlg = node as ConfirmationDialog
+	var title = dlg.title.to_lower()
+	if "modified outside godot" in title or "files have been modified" in title:
+		return true
+	for child in dlg.get_children():
+		if child is VBoxContainer:
+			for sub in child.get_children():
+				if sub is Label:
+					var txt = sub.text.to_lower()
+					if "newer on disk" in txt or "modified outside" in txt:
+						return true
+	return false
+
+func _on_disk_changed_about_to_popup(dlg: ConfirmationDialog) -> void:
+	if network and network.has_method("is_connected_to_session") and network.is_connected_to_session():
+		if is_instance_valid(dlg):
+			call_deferred("_deferred_hide_dialog", dlg)
+
+func _on_disk_changed_visibility_changed(dlg: ConfirmationDialog) -> void:
+	if is_instance_valid(dlg) and dlg.visible:
+		if network and network.has_method("is_connected_to_session") and network.is_connected_to_session():
+			call_deferred("_deferred_hide_dialog", dlg)
+
+func _deferred_hide_dialog(dlg: ConfirmationDialog) -> void:
+	if is_instance_valid(dlg):
+		if network and network.has_method("is_connected_to_session") and network.is_connected_to_session():
+			if dlg.visible:
+				dlg.hide()
 
 
 # ==============================================================================

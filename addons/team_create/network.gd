@@ -20,9 +20,18 @@ var _color_assignment_counter = 0
 var _assigned_colors = []
 var file_sync
 var scene_sync
+var script_sync
 var test_runner
 var node_locks: Dictionary = {}
 var _recently_saved_scenes: Dictionary = {}
+
+# Auto-reconnect state
+var _is_manual_disconnect: bool = false
+var _is_auto_reconnecting: bool = false
+var _auto_reconnect_attempts: int = 0
+const MAX_RECONNECT_ATTEMPTS: int = 5
+var _last_connected_ip: String = ""
+var _last_connected_port: int = DEFAULT_PORT
 
 var _local_username = ""
 # Console thread
@@ -48,6 +57,7 @@ var _current_command_sender: int = 0
 var _command_output_buffer: Array[String] = []
 
 var max_file_size: int = 0
+var file_transfer_timeout: float = 30.0
 
 var chat_history = []
 var chat_id_counter = 0
@@ -81,6 +91,16 @@ func tc_print_rich(msg: String, arg1="", arg2="", arg3=""):
 	else:
 		print_rich(full_msg)
 
+func show_toast(message: String, severity: int = 0, tooltip: String = "") -> void:
+	if not Engine.is_editor_hint() or DisplayServer.get_name() == "headless":
+		return
+	var ei = _get_editor_interface()
+	if ei and ei.has_method("get_editor_toaster"):
+		var toaster = ei.get_editor_toaster()
+		if toaster and toaster.has_method("push_toast"):
+			toaster.push_toast(message, severity, tooltip)
+			return
+
 func _ready():
 	if is_standalone_server:
 		_console_thread = Thread.new()
@@ -105,6 +125,13 @@ func _ready():
 		scene_sync.network = self
 		add_child(scene_sync)
 
+	var script_sync_script = load("res://addons/team_create/script_sync.gd")
+	if script_sync_script:
+		script_sync = script_sync_script.new()
+		script_sync.name = "TeamCreateScriptSync"
+		script_sync.network = self
+		add_child(script_sync)
+
 	var test_runner_script = load("res://addons/team_create/test_runner.gd")
 	if test_runner_script:
 		test_runner = test_runner_script.new()
@@ -119,12 +146,13 @@ func _ready():
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
 var _heartbeat_accumulator: float = 0.0
+var _last_heartbeat_response_time: int = 0
 var server_ping: int = 0
 
 func _process(delta: float):
 	if is_connected_to_session():
 		_heartbeat_accumulator += delta
-		if _heartbeat_accumulator >= 4.0:
+		if _heartbeat_accumulator >= 2.0:
 			_heartbeat_accumulator = 0.0
 			_send_heartbeat()
 	else:
@@ -149,6 +177,7 @@ func send_heartbeat_to_server(client_time: int):
 func receive_heartbeat_from_server(client_time: int):
 	if is_server:
 		return
+	_last_heartbeat_response_time = Time.get_ticks_msec()
 	var rtt = Time.get_ticks_msec() - client_time
 	if rtt >= 0:
 		server_ping = rtt
@@ -167,6 +196,11 @@ func report_peer_ping(ping_ms: int):
 		peers[sender_id]["ping"] = ping_ms
 
 func _configure_enet_peer(id: int):
+	# In client-server topology, clients only have a direct ENet peer connection to peer 1 (the server).
+	# Calling get_peer(id) for other clients triggers "Condition '!peers.has(p_id)' is true" in enet_multiplayer_peer.cpp.
+	if not is_server and id != 1:
+		return
+
 	var enet: ENetMultiplayerPeer = null
 	if peer is ENetMultiplayerPeer:
 		enet = peer
@@ -176,9 +210,9 @@ func _configure_enet_peer(id: int):
 	if enet:
 		var p = enet.get_peer(id)
 		if p:
-			# 32 retries, 10s minimum timeout, 90s maximum timeout, ping every 1s
-			p.set_timeout(32, 10000, 90000)
-			p.ping_interval(1000)
+			# 64 retries, 60s minimum timeout, 120s maximum timeout, ping every 2.5s
+			p.set_timeout(64, 60000, 120000)
+			p.ping_interval(2500)
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -227,6 +261,7 @@ func _process_console_command(input: String):
 			tc_print_rich("[color=white]/unadmin <user or id>[/color]   - Removes admin privileges from a user")
 			tc_print_rich("[color=white]/chatimgs <true/false>[/color] - Lets users send images in the chat")
 			tc_print_rich("[color=white]/filesize <num or none>[/color] - Sets maximum file size limit")
+			tc_print_rich("[color=white]/filetimeout <seconds>[/color] - Sets HTTP file transfer timeout (default: 30s)")
 			tc_print_rich("[color=white]/backup [scene][/color]       - Creates a snapshot backup of scenes")
 			tc_print_rich("[color=white]/autobackup <true/false>[/color] - Toggles automatic backups (default: false)")
 			tc_print_rich("[color=white]/allowdeletions <true/false>[/color] - Toggles client-side file deletion replication (default: true)")
@@ -374,6 +409,25 @@ func _process_console_command(input: String):
 			else:
 				tc_print_rich("[color=red]Invalid argument. Use a number or none.[/color]")
 
+	elif cmd == "/filetimeout":
+		if args.size() < 2:
+			tc_print_rich("[color=orange]Usage: /filetimeout <seconds (5-300)> (Current: " + str(file_transfer_timeout) + "s)[/color]")
+		else:
+			var val = args[1].to_lower()
+			if val.is_valid_float() or val.is_valid_int():
+				var sec = val.to_float()
+				if sec < 5.0 or sec > 300.0:
+					tc_print_rich("[color=red]Timeout must be between 5 and 300 seconds.[/color]")
+				else:
+					file_transfer_timeout = sec
+					if file_sync and file_sync.has_method("set_file_timeout"):
+						file_sync.set_file_timeout(sec)
+					if is_server and is_connected_to_session():
+						rpc("sync_file_timeout", sec)
+					tc_print_rich("[color=green]HTTP file transfer timeout set to " + str(sec) + " seconds.[/color]")
+			else:
+				tc_print_rich("[color=red]Invalid number of seconds.[/color]")
+
 	elif cmd == "/chatimgs":
 		if args.size() < 2:
 			tc_print_rich("[color=orange]Usage: /chatimgs <true/false>[/color]")
@@ -501,8 +555,10 @@ func _process_console_command(input: String):
 				continue # Skip the server
 			var info = peers[id]
 			var ip_str = "N/A"
-			if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer is ENetMultiplayerPeer:
-				ip_str = multiplayer.multiplayer_peer.get_peer(id).get_remote_address()
+			if is_server and is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer is ENetMultiplayerPeer:
+				var p = multiplayer.multiplayer_peer.get_peer(id)
+				if p:
+					ip_str = p.get_remote_address()
 			var ping_str = ""
 			if info.has("ping") and info["ping"] > 0:
 				ping_str = ", Ping: " + str(info["ping"]) + "ms"
@@ -841,6 +897,9 @@ func _ensure_server_files():
 				f.close()
 
 func host_lan_server(raw_ip: String = ""):
+	_is_manual_disconnect = false
+	_auto_reconnect_attempts = 0
+	_is_auto_reconnecting = false
 	_lan_connect_retry_count = 0
 	_kill_local_server()
 	disconnect_peer()
@@ -890,6 +949,10 @@ func host_lan_server(raw_ip: String = ""):
 		join_server("127.0.0.1:" + str(target_port))
 
 func host_server():
+	_is_manual_disconnect = false
+	_auto_reconnect_attempts = 0
+	_is_auto_reconnecting = false
+	_last_connected_ip = ""
 	disconnect_peer()
 	var err = peer.create_server(PORT, MAX_CLIENTS)
 	if err != OK:
@@ -908,6 +971,7 @@ func host_server():
 	_add_peer(1)
 	call_deferred("_update_local_chat_ui")
 	_update_ui_state()
+	show_toast("Hosted Team Create session on port %d" % PORT, 0)
 
 	check_firewall_ports(PORT, HTTP_PORT)
 
@@ -924,6 +988,10 @@ func join_server(ip: String):
 	server_ip = target_ip
 	PORT = target_port
 	HTTP_PORT = target_port
+	if _auto_reconnect_attempts == 0:
+		_last_connected_ip = target_ip
+		_last_connected_port = target_port
+	_is_manual_disconnect = false
 	if scene_sync:
 		var cur_scn = scene_sync._get_edited_scene_root()
 		if cur_scn and cur_scn.scene_file_path != "":
@@ -933,6 +1001,9 @@ func join_server(ip: String):
 	var err = peer.create_client(target_ip, target_port)
 	if err != OK:
 		tc_print("Failed to join server: Error code ", err)
+		if not _is_manual_disconnect and _auto_reconnect_attempts > 0 and _auto_reconnect_attempts < MAX_RECONNECT_ATTEMPTS:
+			_attempt_auto_reconnect()
+			return
 		disconnect_peer()
 		return
 	if is_inside_tree() and multiplayer:
@@ -940,7 +1011,7 @@ func join_server(ip: String):
 	is_server = false
 	if is_connected_to_session():
 		_add_peer(multiplayer.get_unique_id())
-	if plugin:
+	if plugin and _auto_reconnect_attempts == 0:
 		plugin._force_close_all_scenes()
 
 func change_server_port(new_port: int) -> void:
@@ -1059,7 +1130,12 @@ func _report_closed_firewall_ports(closed_ports: Array, fw_tool: String) -> void
 	tc_print_rich("[color=yellow]Clients may not be able to connect or sync files until opened.[/color]")
 	tc_print_rich("[color=yellow]==================================================[/color]")
 
-func disconnect_peer():
+func disconnect_peer(manual: bool = false):
+	if manual:
+		_is_manual_disconnect = true
+		_auto_reconnect_attempts = 0
+		_is_auto_reconnecting = false
+		_last_connected_ip = ""
 	var was_connected = false
 	if is_inside_tree() and multiplayer:
 		was_connected = multiplayer.has_multiplayer_peer()
@@ -1080,6 +1156,8 @@ func disconnect_peer():
 		scene_sync._last_selected_ids.clear()
 		scene_sync._dirty_scenes.clear()
 		scene_sync._pending_resource_properties.clear()
+		scene_sync._pending_subscene_instantiations.clear()
+		scene_sync._pending_node_properties.clear()
 		scene_sync._active_node_locks.clear()
 		scene_sync._pending_selection_nodes.clear()
 		scene_sync._pending_selection_index = 0
@@ -1089,6 +1167,8 @@ func disconnect_peer():
 		scene_sync._is_reloading_scene = false
 		scene_sync._ignore_next_structure_event = false
 		scene_sync._synced_scene_states.clear()
+	if script_sync and script_sync.has_method("clear_all"):
+		script_sync.clear_all()
 	peers.clear()
 	_color_assignment_counter = 0
 	_assigned_colors.clear()
@@ -1136,6 +1216,7 @@ func _on_peer_connected(id: int):
 		# NOTE: We DO NOT push the scene here anymore! The client will request it when file sync finishes.
 		# Sync max file size to the new peer
 		rpc_id(id, "update_max_file_size", max_file_size)
+		rpc_id(id, "sync_file_timeout", file_transfer_timeout)
 
 		# Send current peer list to the new peer
 		for existing_id in peers.keys():
@@ -1153,6 +1234,9 @@ func _on_peer_connected(id: int):
 
 func _on_peer_disconnected(id: int):
 	tc_print("Peer disconnected: ", id)
+	var peer_name = peers.get(id, {}).get("username", "User %d" % id)
+	if id != 1:
+		show_toast("%s left the session" % peer_name, 0)
 	if is_server and scene_sync and scene_sync._dirty_scenes.size() > 0:
 		scene_sync.save_dirty_scenes()
 	if peers.has(id):
@@ -1166,6 +1250,8 @@ func _on_peer_disconnected(id: int):
 		scene_sync._clear_peer_cursor(id)
 		if scene_sync.has_method("release_all_locks_for_peer"):
 			scene_sync.release_all_locks_for_peer(id)
+	if script_sync and script_sync.has_method("clear_peer_caret"):
+		script_sync.clear_peer_caret(id)
 
 	if is_server and is_connected_to_session():
 		var to_release = []
@@ -1179,7 +1265,12 @@ func _on_peer_disconnected(id: int):
 
 func _on_connected_to_server():
 	_lan_connect_retry_count = 0
+	_auto_reconnect_attempts = 0
+	_is_auto_reconnecting = false
+	_is_manual_disconnect = false
+	_last_heartbeat_response_time = Time.get_ticks_msec()
 	tc_print("Connected to server successfully!")
+	show_toast("Connected to Team Create session", 0)
 	_configure_enet_peer(1)
 	_add_peer(1) # Add server to peers list
 	_update_ui_state()
@@ -1217,11 +1308,11 @@ func _request_scene_from_server():
 			if main_scene != "" and FileAccess.file_exists(main_scene):
 				ei.open_scene_from_path(main_scene)
 				scene_path = main_scene
-		if not is_server and multiplayer and multiplayer.get_unique_id() != 1:
+		if is_connected_to_session() and not is_server and multiplayer.get_unique_id() != 1:
 			if scene_path != "" and scene_sync:
 				scene_sync._synced_scene_states[scene_path] = true
 			rpc_id(1, "request_push_scene", scene_path)
-	elif not is_server and multiplayer and multiplayer.get_unique_id() != 1:
+	elif is_connected_to_session() and not is_server and multiplayer.get_unique_id() != 1:
 		rpc_id(1, "request_push_scene", "")
 
 @rpc("any_peer", "reliable")
@@ -1229,7 +1320,12 @@ func sync_peer_info(id: int, info: Dictionary):
 	# Only the server should dictate peer info to avoid race conditions and enforce color assignments.
 	if not is_server and multiplayer.get_remote_sender_id() != 1:
 		return
+	var is_new = not peers.has(id)
 	peers[id] = info
+
+	var my_id = multiplayer.get_unique_id() if (multiplayer and is_connected_to_session()) else 0
+	if is_new and id != 1 and id != my_id:
+		show_toast("%s joined the session" % info.get("username", "User %d" % id), 0)
 
 	# Update 3D cursor labels if username changed
 	if scene_sync and scene_sync.has_method("_update_cursor_username"):
@@ -1239,9 +1335,20 @@ func sync_peer_info(id: int, info: Dictionary):
 
 @rpc("any_peer", "reliable")
 func update_max_file_size(size: int):
-	if multiplayer.get_remote_sender_id() != 1:
+	var sender_id = multiplayer.get_remote_sender_id() if (is_inside_tree() and multiplayer) else 1
+	if sender_id != 1:
 		return
 	max_file_size = size
+
+@rpc("any_peer", "reliable")
+func sync_file_timeout(timeout: float):
+	var sender_id = multiplayer.get_remote_sender_id() if (is_inside_tree() and multiplayer) else 1
+	if sender_id != 1 and not is_server:
+		return
+	file_transfer_timeout = clamp(timeout, 5.0, 300.0)
+	if file_sync and file_sync.has_method("set_file_timeout"):
+		file_sync.set_file_timeout(file_transfer_timeout)
+	tc_print("File transfer timeout synced: %s seconds" % str(file_transfer_timeout))
 
 @rpc("any_peer", "reliable")
 func show_message(msg: String):
@@ -1298,11 +1405,57 @@ func _on_connection_failed():
 			join_server("127.0.0.1:" + str(PORT))
 		return
 	_lan_connect_retry_count = 0
+
+	# Auto-reconnect retry sequence
+	if not _is_manual_disconnect and _auto_reconnect_attempts > 0 and _auto_reconnect_attempts < MAX_RECONNECT_ATTEMPTS:
+		_attempt_auto_reconnect()
+		return
+
+	_auto_reconnect_attempts = 0
+	_is_auto_reconnecting = false
+	show_toast("Failed to connect to Team Create server", 2)
 	disconnect_peer()
 
 func _on_server_disconnected():
 	tc_print("Server disconnected.")
-	disconnect_peer()
+	if not _is_manual_disconnect and _last_connected_ip != "" and not is_server:
+		_attempt_auto_reconnect()
+	else:
+		show_toast("Disconnected from Team Create session", 1)
+		disconnect_peer()
+
+func _attempt_auto_reconnect() -> void:
+	if _is_auto_reconnecting:
+		return
+	_is_auto_reconnecting = true
+	_auto_reconnect_attempts += 1
+	if _auto_reconnect_attempts > MAX_RECONNECT_ATTEMPTS:
+		tc_print("Auto-reconnect failed after %d attempts." % MAX_RECONNECT_ATTEMPTS)
+		show_toast("Connection to server lost. Reconnect failed.", 2)
+		_is_auto_reconnecting = false
+		_auto_reconnect_attempts = 0
+		disconnect_peer()
+		return
+
+	tc_print("Attempting to reconnect (attempt %d/%d)..." % [_auto_reconnect_attempts, MAX_RECONNECT_ATTEMPTS])
+	show_toast("Connection lost. Reconnecting (%d/%d)..." % [_auto_reconnect_attempts, MAX_RECONNECT_ATTEMPTS], 1)
+	if ui and ui.status_label:
+		ui.status_label.text = "Status: Reconnecting (%d/%d)..." % [_auto_reconnect_attempts, MAX_RECONNECT_ATTEMPTS]
+
+	if is_inside_tree() and multiplayer:
+		multiplayer.multiplayer_peer = null
+	if peer:
+		peer.close()
+
+	var tree = get_tree() if is_inside_tree() else Engine.get_main_loop() as SceneTree
+	if tree:
+		await tree.create_timer(2.5).timeout
+	else:
+		OS.delay_msec(2500)
+
+	if not _is_manual_disconnect and _last_connected_ip != "":
+		_is_auto_reconnecting = false
+		join_server(_last_connected_ip + ":" + str(_last_connected_port))
 
 func _update_ui_state():
 	if ui:
@@ -1634,7 +1787,7 @@ func is_peer_host_or_admin(peer_id: int) -> bool:
 		enet = peer
 	elif multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer is ENetMultiplayerPeer and multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_DISCONNECTED:
 		enet = multiplayer.multiplayer_peer
-	if enet:
+	if enet and is_server:
 		var p = enet.get_peer(peer_id)
 		if p:
 			var ip = p.get_remote_address()
@@ -2025,7 +2178,7 @@ func on_local_scene_saved(filepath: String):
 			var bytes = FileAccess.get_file_as_bytes(filepath)
 			if is_server:
 				rpc("receive_manual_save", filepath, bytes)
-			elif multiplayer and multiplayer.get_unique_id() != 1:
+			elif is_connected_to_session() and multiplayer.get_unique_id() != 1:
 				rpc_id(1, "receive_manual_save", filepath, bytes)
 
 @rpc("any_peer", "reliable")
@@ -2133,7 +2286,7 @@ func create_backup(target_path: String = "") -> Array:
 	if multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
 		if is_server:
 			create_server_backup(path_to_backup)
-		elif multiplayer and multiplayer.get_unique_id() != 1:
+		elif is_connected_to_session() and multiplayer.get_unique_id() != 1:
 			rpc_id(1, "request_server_backup", path_to_backup)
 
 	return backed_up

@@ -402,7 +402,7 @@ func _on_join_pressed() -> void:
 
 func _on_disconnect_pressed() -> void:
 	if network:
-		network.disconnect_peer()
+		network.disconnect_peer(true)
 		if network.has_method("stop_local_server"):
 			network.stop_local_server()
 

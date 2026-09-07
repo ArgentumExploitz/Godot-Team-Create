@@ -44,8 +44,8 @@ func _process(delta):
 				var resp = _http_responses[peer]
 				resp["timer"] += delta
 
-				# Timeout idle connections (10 seconds)
-				if resp["timer"] > 10.0:
+				# Timeout idle connections
+				if resp["timer"] > file_transfer_timeout:
 					peer.disconnect_from_host()
 					_http_clients.remove_at(i)
 					_http_buffers.erase(peer)
@@ -128,8 +128,13 @@ func _process(delta):
 
 							if not resp["active"]:
 								if header_end_idx == -1:
-									var check_len = min(buffer_bytes.size(), 2048)
-									req_str = buffer_bytes.slice(0, check_len).get_string_from_ascii()
+									# Wait for complete headers up to safety threshold (16KB)
+									if buffer_bytes.size() > 16384:
+										peer.disconnect_from_host()
+										_http_clients.remove_at(i)
+										_http_buffers.erase(peer)
+										_http_responses.erase(peer)
+									continue
 
 								# Check if it's a POST waiting for more body data
 								if req_str.begins_with("POST "):
@@ -238,6 +243,7 @@ var _receiving_files: Dictionary = {}
 var _known_files: Array = []
 var _file_hash_cache: Dictionary = {}
 signal sync_completed
+var file_transfer_timeout: float = 30.0
 var auto_backups_enabled = false
 var allow_client_file_deletions = true
 var auto_relay_files = true
@@ -448,6 +454,8 @@ func _ready():
 	call_deferred("_setup_fs_signals")
 	sync_completed.connect(func():
 		_initial_sync_done = true
+		if network and network.has_method("show_toast"):
+			network.show_toast("Project assets synchronized", 0)
 	)
 
 func _setup_fs_signals():
@@ -726,7 +734,7 @@ func compare_and_sync_files(peer_hashes: Dictionary):
 
 func _download_file_http(path: String):
 	var http_request = HTTPRequest.new()
-	http_request.timeout = 10.0
+	http_request.timeout = file_transfer_timeout
 	add_child(http_request)
 	http_request.request_completed.connect(self._http_download_completed.bind(http_request, path))
 
@@ -760,6 +768,7 @@ func _http_download_completed(result: int, response_code: int, headers: PackedSt
 
 func _upload_file_http(path: String, bytes: PackedByteArray):
 	var http_request = HTTPRequest.new()
+	http_request.timeout = file_transfer_timeout
 	add_child(http_request)
 	http_request.request_completed.connect(self._http_upload_completed.bind(http_request, path))
 
@@ -981,7 +990,7 @@ func receive_file(path: String, transfer_id: int, bytes: PackedByteArray, is_fin
 			if network and network.is_server and relay_enabled:
 				_has_unrelayed_files = true
 		else:
-			network.tc_print("File unchanged, skipped writing: ", path)
+			pass
 
 		asset_imported.emit(path)
 
@@ -1078,3 +1087,6 @@ func _finish_http_download(path: String):
 				_schedule_relay_sync()
 	elif network and network.is_server and _has_unrelayed_files:
 		_schedule_relay_sync()
+
+func set_file_timeout(seconds: float):
+	file_transfer_timeout = clamp(seconds, 5.0, 300.0)

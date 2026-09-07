@@ -157,7 +157,29 @@ func _get_target_scene(scene_path: String) -> Node:
 			printerr("Team Create: Failed to load scene or its dependencies (cooldown applied): ", scene_path)
 		return null
 	else:
-		return _get_edited_scene_root()
+		if scene_path == "":
+			return _get_edited_scene_root()
+
+		var ei = _get_editor_interface()
+		if ei and ei.has_method("get_open_scene_roots"):
+			var open_roots = ei.get_open_scene_roots()
+			for root in open_roots:
+				if is_instance_valid(root):
+					var path = root.scene_file_path
+					if path == "":
+						path = root.get_meta("scene_file_path", "")
+					if path == scene_path:
+						return root
+
+		var active = _get_edited_scene_root()
+		if active and is_instance_valid(active):
+			var active_path = active.scene_file_path
+			if active_path == "":
+				active_path = active.get_meta("scene_file_path", "")
+			if active_path == scene_path:
+				return active
+
+		return null
 
 func _save_server_tracked_scenes():
 	if not network or not network.get("is_standalone_server"):
@@ -221,8 +243,11 @@ func save_dirty_scenes():
 		_save_server_tracked_scenes()
 	elif network and network.is_server:
 		var ei = _get_editor_interface()
-		if ei and ei.has_method("save_scene"):
-			ei.save_scene()
+		if ei:
+			if ei.has_method("save_all_scenes"):
+				ei.save_all_scenes()
+			elif ei.has_method("save_scene"):
+				ei.save_scene()
 	_dirty_scenes.clear()
 	_dirty_save_cooldown = DIRTY_SAVE_DELAY
 
@@ -232,8 +257,11 @@ func flush_all_scenes_to_disk():
 		_dirty_scenes.clear()
 	else:
 		var ei = _get_editor_interface()
-		if ei and ei.has_method("save_scene"):
-			ei.save_scene()
+		if ei:
+			if ei.has_method("save_all_scenes"):
+				ei.save_all_scenes()
+			elif ei.has_method("save_scene"):
+				ei.save_scene()
 		_dirty_scenes.clear()
 
 @rpc("any_peer", "reliable")
@@ -272,6 +300,8 @@ func deny_node_lock(node_id: String, holder_id: int):
 		holder_name = network.peers[holder_id].get("username", holder_name)
 	if network:
 		network.tc_print("Team Create: Node is currently locked by ", holder_name)
+		if network.has_method("show_toast"):
+			network.show_toast("Node is locked by %s" % holder_name, 1)
 
 func release_all_locks_for_peer(peer_id: int):
 	var to_release = []
@@ -314,6 +344,8 @@ var _pre_removal_paths = {}
 var _node_names = {}
 var _force_full_sync_next_frame = false
 var _pending_resource_properties = []
+var _pending_subscene_instantiations: Array[Dictionary] = []
+var _pending_node_properties: Array[Dictionary] = []
 var _receiving_scenes: Dictionary = {}
 var _receiving_scene_states: Dictionary = {}
 var _receiving_properties: Dictionary = {}
@@ -349,13 +381,19 @@ func _setup_file_sync_signals():
 			efs.filesystem_changed.connect(_on_filesystem_changed_scene_sync)
 
 func _on_resources_reimported(resources: PackedStringArray):
+	_process_pending_subscene_instantiations()
 	_process_pending_resource_properties()
+	_process_pending_node_properties()
 
 func _on_filesystem_changed_scene_sync():
+	_process_pending_subscene_instantiations()
 	_process_pending_resource_properties()
+	_process_pending_node_properties()
 
 func _on_asset_imported(path: String):
+	_process_pending_subscene_instantiations()
 	_process_pending_resource_properties()
+	_process_pending_node_properties()
 
 func _setup_undo_redo():
 	var undo_redo = null
@@ -434,7 +472,9 @@ func _process(delta):
 		if _dirty_save_cooldown <= 0.0:
 			save_dirty_scenes()
 
+	_process_pending_subscene_instantiations()
 	_process_pending_resource_properties()
+	_process_pending_node_properties()
 
 	# Periodic camera cache flush to disk (runs online and offline)
 	if _is_camera_dirty:
@@ -585,6 +625,88 @@ func _process_pending_resource_properties():
 			if Time.get_ticks_msec() > pending.timeout:
 				_pending_resource_properties.remove_at(i)
 
+func _process_pending_subscene_instantiations():
+	if _pending_subscene_instantiations.is_empty():
+		return
+
+	var now = Time.get_ticks_msec()
+	for i in range(_pending_subscene_instantiations.size() - 1, -1, -1):
+		var pending = _pending_subscene_instantiations[i]
+		var scene_path = pending.scene_path
+		var current_scene = _get_target_scene(scene_path)
+		if not current_scene:
+			if now > pending.timeout:
+				_pending_subscene_instantiations.remove_at(i)
+			continue
+
+		var parent = network.get_node_by_unique_id(current_scene, pending.parent_id)
+		if not is_instance_valid(parent):
+			if now > pending.timeout:
+				_pending_subscene_instantiations.remove_at(i)
+			continue
+
+		if parent.has_node(pending.new_name):
+			_pending_subscene_instantiations.remove_at(i)
+			continue
+
+		var node_scene_path = pending.node_scene_path
+		var is_downloading = network and network.file_sync and node_scene_path in network.file_sync.downloading_files
+		var file_exists = FileAccess.file_exists(node_scene_path)
+
+		var scn: PackedScene = null
+		if file_exists and not is_downloading:
+			var res = _safe_load_headless(node_scene_path)
+			scn = res.get("packed", null)
+
+		var new_node: Node = null
+		if scn:
+			new_node = scn.instantiate()
+		elif now > pending.timeout:
+			if ClassDB.can_instantiate(pending.type):
+				new_node = ClassDB.instantiate(pending.type)
+			else:
+				new_node = Node.new()
+
+		if new_node:
+			_ignore_next_structure_event = true
+			new_node.name = pending.new_name
+			new_node.set_meta("_tc_uuid", pending.new_id)
+			_node_names[new_node.get_instance_id()] = pending.new_name
+			parent.add_child(new_node)
+			if parent.owner and parent.owner != current_scene and parent.scene_file_path == "":
+				new_node.owner = parent.owner
+			else:
+				new_node.owner = current_scene
+			mark_scene_dirty(scene_path)
+			_ignore_next_structure_event = false
+
+			_pending_subscene_instantiations.remove_at(i)
+			_process_pending_node_properties()
+
+func _process_pending_node_properties():
+	if _pending_node_properties.is_empty():
+		return
+
+	var now = Time.get_ticks_msec()
+	for i in range(_pending_node_properties.size() - 1, -1, -1):
+		var pending = _pending_node_properties[i]
+		var current_scene = _get_target_scene(pending.scene_path)
+		if not current_scene:
+			if now > pending.timeout:
+				_pending_node_properties.remove_at(i)
+			continue
+
+		var node = network.get_node_by_unique_id(current_scene, pending.id)
+		if is_instance_valid(node):
+			var prop_id = pending.id
+			var prop_name = pending.prop_name
+			var prop_val = pending.value
+			var scn_path = pending.scene_path
+			_pending_node_properties.remove_at(i)
+			update_node_property(prop_id, prop_name, prop_val, scn_path)
+		elif now > pending.timeout:
+			_pending_node_properties.remove_at(i)
+
 func _track_active_scene():
 	if _is_reloading_scene:
 		return
@@ -610,7 +732,6 @@ func _track_active_scene():
 			_save_camera_cache()
 
 		_last_scene_path = cur_path
-		_last_tracked_properties.clear()
 		_dirty_subresources.clear()
 		_pending_selection_nodes.clear()
 		_pending_selection_index = 0
@@ -794,7 +915,7 @@ func _track_selection():
 				if network and network.is_connected_to_session():
 					if network.is_server:
 						release_node_lock(id, _last_scene_path)
-					elif multiplayer and multiplayer.get_unique_id() != 1:
+					elif multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.get_unique_id() != 1:
 						rpc_id(1, "release_node_lock", id, _last_scene_path)
 
 		var lock_count = 0
@@ -805,7 +926,7 @@ func _track_selection():
 				if network and network.is_connected_to_session():
 					if network.is_server:
 						request_node_lock(id, _last_scene_path)
-					elif multiplayer and multiplayer.get_unique_id() != 1:
+					elif multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.get_unique_id() != 1:
 						rpc_id(1, "request_node_lock", id, _last_scene_path)
 			lock_count += 1
 
@@ -839,8 +960,12 @@ func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String
 			if is_instance_valid(node):
 				node.queue_free()
 
-	# If the peer is selecting nodes in a different scene, we don't draw new indicators here.
-	if scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path:
+	# If the peer is selecting nodes in a different scene than our active tab, don't draw outlines here
+	var active_scene = _get_edited_scene_root()
+	var active_path = active_scene.scene_file_path if active_scene else ""
+	if active_path == "" and active_scene:
+		active_path = active_scene.get_meta("scene_file_path", "")
+	if scene_path != "" and active_path != "" and active_path != scene_path:
 		return
 
 	# Add new indicators (cap at MAX_OUTLINE_NODES to avoid viewport render stalls on large selections)
@@ -1177,6 +1302,9 @@ func _on_node_removed(node: Node):
 	await get_tree().process_frame
 	await get_tree().process_frame
 
+	if not is_inside_tree() or not (network and network.is_connected_to_session()):
+		return
+
 	if _is_reloading_scene:
 		return
 
@@ -1297,33 +1425,69 @@ func remote_node_added(parent_id: String, type: String, new_name: String, new_id
 			_ignore_next_structure_event = false
 			return
 		var parent = network.get_node_by_unique_id(current_scene, parent_id)
-		if parent:
-			# Prevent duplicates. If the exact node name already exists under the parent,
-			# DO NOT instantiate a new one. This fundamentally prevents exponential rejoin floods.
-			if parent.has_node(new_name):
+		if not parent:
+			if node_scene_path != "":
+				_pending_subscene_instantiations.append({
+					"parent_id": parent_id,
+					"type": type,
+					"new_name": new_name,
+					"new_id": new_id,
+					"scene_path": scene_path,
+					"node_scene_path": node_scene_path,
+					"sender_id": sender_id,
+					"timeout": Time.get_ticks_msec() + 30000
+				})
+			_ignore_next_structure_event = false
+			return
+
+		# Prevent duplicates. If the exact node name already exists under the parent,
+		# DO NOT instantiate a new one. This fundamentally prevents exponential rejoin floods.
+		if parent.has_node(new_name):
+			_ignore_next_structure_event = false
+			return
+
+		var new_node = null
+		if node_scene_path != "":
+			var is_downloading = network and network.file_sync and node_scene_path in network.file_sync.downloading_files
+			var file_exists = FileAccess.file_exists(node_scene_path)
+			if file_exists and not is_downloading:
+				var res = _safe_load_headless(node_scene_path)
+				var scn = res.get("packed", null)
+				if scn and scn is PackedScene:
+					new_node = scn.instantiate()
+
+			if not new_node:
+				_pending_subscene_instantiations.append({
+					"parent_id": parent_id,
+					"type": type,
+					"new_name": new_name,
+					"new_id": new_id,
+					"scene_path": scene_path,
+					"node_scene_path": node_scene_path,
+					"sender_id": sender_id,
+					"timeout": Time.get_ticks_msec() + 30000
+				})
+				if network and network.file_sync and not file_exists and not is_downloading:
+					network.file_sync.request_asset_immediately(node_scene_path, sender_id)
 				_ignore_next_structure_event = false
 				return
 
-			var new_node = null
-			if node_scene_path != "":
-				var scn = load(node_scene_path)
-				if scn:
-					new_node = scn.instantiate()
-			if not new_node:
-				if ClassDB.can_instantiate(type):
-					new_node = ClassDB.instantiate(type)
-				else:
-					new_node = Node.new()
-
-			new_node.name = new_name
-			new_node.set_meta("_tc_uuid", new_id)
-			_node_names[new_node.get_instance_id()] = new_name
-			parent.add_child(new_node)
-			if parent.owner and parent.owner != current_scene and parent.scene_file_path == "":
-				new_node.owner = parent.owner
+		if not new_node:
+			if ClassDB.can_instantiate(type):
+				new_node = ClassDB.instantiate(type)
 			else:
-				new_node.owner = current_scene
-			mark_scene_dirty(scene_path)
+				new_node = Node.new()
+
+		new_node.name = new_name
+		new_node.set_meta("_tc_uuid", new_id)
+		_node_names[new_node.get_instance_id()] = new_name
+		parent.add_child(new_node)
+		if parent.owner and parent.owner != current_scene and parent.scene_file_path == "":
+			new_node.owner = parent.owner
+		else:
+			new_node.owner = current_scene
+		mark_scene_dirty(scene_path)
+		_process_pending_node_properties()
 	_ignore_next_structure_event = false
 
 @rpc("any_peer", "reliable")
@@ -1563,6 +1727,15 @@ func update_node_property(id: String, prop_name: String, value: Variant, scene_p
 				_last_tracked_properties[id][prop_name] = stored_dict
 			else:
 				_last_tracked_properties[id][prop_name] = value
+		else:
+			_pending_node_properties.append({
+				"id": id,
+				"prop_name": prop_name,
+				"value": value,
+				"scene_path": scene_path,
+				"sender_id": sender_id,
+				"timeout": Time.get_ticks_msec() + 30000
+			})
 
 # ==============================================================================
 # Automatic Semantic Offline Scene Merge
@@ -1867,7 +2040,6 @@ func receive_scene(path: String, transfer_id: int, bytes: PackedByteArray, is_fi
 				var disk_bytes = FileAccess.get_file_as_bytes(path)
 				if disk_bytes.size() == bytes.size() and disk_bytes == bytes:
 					_last_scene_path = path
-					network.tc_print("Team Create: Received scene is already up-to-date on disk: ", path)
 					return
 
 			var editor = _get_editor_interface()
@@ -2025,7 +2197,6 @@ func receive_scene_state(path: String, transfer_id: int, bytes: PackedByteArray,
 		if is_identical:
 			_last_scene_path = path
 			if not (network and network.get("is_standalone_server")):
-				network.tc_print("Team Create: Scene state is already up-to-date on disk: ", path)
 				return
 
 		var merge_data = prepare_offline_scene_merge(path, bytes)
@@ -2182,11 +2353,16 @@ func update_peer_cursor_3d(peer_id: int, pos: Transform3D, scene_path: String = 
 	if network and (network.get("is_standalone_server") or DisplayServer.get_name() == "headless"):
 		return
 
-	var current_scene = _get_target_scene(scene_path)
-	if not current_scene or (scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path):
+	var active_scene = _get_edited_scene_root()
+	var active_path = active_scene.scene_file_path if active_scene else ""
+	if active_path == "" and active_scene:
+		active_path = active_scene.get_meta("scene_file_path", "")
+
+	if not active_scene or (scene_path != "" and active_path != "" and active_path != scene_path):
 		_clear_peer_cursor(peer_id)
 		return
 
+	var current_scene = active_scene
 	var tree = current_scene.get_tree()
 	if not tree: return
 
@@ -2207,11 +2383,16 @@ func update_peer_cursor_2d(peer_id: int, pos: Vector2, scene_path: String = ""):
 	if network and (network.get("is_standalone_server") or DisplayServer.get_name() == "headless"):
 		return
 
-	var current_scene = _get_target_scene(scene_path)
-	if not current_scene or (scene_path != "" and current_scene.get_meta("scene_file_path", current_scene.scene_file_path) != scene_path):
+	var active_scene = _get_edited_scene_root()
+	var active_path = active_scene.scene_file_path if active_scene else ""
+	if active_path == "" and active_scene:
+		active_path = active_scene.get_meta("scene_file_path", "")
+
+	if not active_scene or (scene_path != "" and active_path != "" and active_path != scene_path):
 		_clear_peer_cursor(peer_id)
 		return
 
+	var current_scene = active_scene
 	var tree = current_scene.get_tree()
 	if not tree: return
 

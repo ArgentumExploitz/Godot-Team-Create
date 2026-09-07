@@ -240,9 +240,14 @@ func _refresh_messages(scroll_to_bottom: bool = false):
 		call_deferred("_scroll_to_bottom")
 
 func _scroll_to_bottom():
+	if not is_inside_tree() or get_tree() == null:
+		return
 	await get_tree().process_frame
+	if not is_inside_tree() or not scroll_container or not is_instance_valid(scroll_container):
+		return
 	var scrollbar = scroll_container.get_v_scroll_bar()
-	scrollbar.value = scrollbar.max_value
+	if scrollbar and is_instance_valid(scrollbar):
+		scrollbar.value = scrollbar.max_value
 
 func _create_message_node(m: Dictionary, is_pinned: bool) -> Control:
 	var type = m.get("type", "text")
