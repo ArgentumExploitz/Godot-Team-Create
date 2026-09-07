@@ -25,6 +25,7 @@ var _applying_remote_depth: int = 0       # Suppress local diffs during remote u
 
 # Server text buffers (Headless / Host persistence)
 var _server_script_buffers: Dictionary = {} # script_path -> PackedStringArray
+var _server_script_revisions: Dictionary = {} # script_path -> int
 var _server_save_timer: float = 0.0
 
 # Presence state
@@ -177,13 +178,23 @@ func _attach_presence_overlay(path: String, code_edit: Control):
 		if hsb and not hsb.value_changed.is_connected(overlay._on_scroll_changed):
 			hsb.value_changed.connect(overlay._on_scroll_changed)
 
+func _send_peer_caret(peer_id: int, path: String, line: int, col: int, has_sel: bool, sfl: int, sfc: int, stl: int, stc: int):
+	if not (network and network.is_connected_to_session()):
+		return
+	if network.is_server:
+		for pid in network.peers:
+			if pid != 1:
+				rpc_id(pid, "update_peer_script_caret", peer_id, path, line, col, has_sel, sfl, sfc, stl, stc)
+	else:
+		rpc_id(1, "update_peer_script_caret", peer_id, path, line, col, has_sel, sfl, sfc, stl, stc)
+
 func _on_editor_script_changed(script: Script):
 	if not is_instance_valid(script) or script.resource_path == "":
 		if _active_script_path != "":
 			_active_script_path = ""
 			if network and network.is_connected_to_session():
 				var my_id = multiplayer.get_unique_id()
-				rpc("update_peer_script_caret", my_id, "", 0, 0, false, 0, 0, 0, 0)
+				_send_peer_caret(my_id, "", 0, 0, false, 0, 0, 0, 0)
 		return
 	var path = script.resource_path
 	if path != "":
@@ -205,7 +216,7 @@ func _on_script_closed(script: Script):
 		_active_script_path = ""
 		if network and network.is_connected_to_session():
 			var my_id = multiplayer.get_unique_id()
-			rpc("update_peer_script_caret", my_id, "", 0, 0, false, 0, 0, 0, 0)
+			_send_peer_caret(my_id, "", 0, 0, false, 0, 0, 0, 0)
 
 func _on_code_edit_text_changed(path: String):
 	if _applying_remote_depth > 0:
@@ -257,8 +268,15 @@ func _broadcast_script_diff(path: String):
 	_synced_lines[path] = cur_lines
 	var checksum = cur_text.md5_text()
 
-	# Broadcast delta to peers and server
-	rpc("apply_script_patch", path, start_line, old_count, new_slice, next_rev, checksum)
+	# Targeted delivery: host sends directly to peers; clients send to server (peer 1) for relay
+	if network and network.is_server:
+		_apply_patch_to_server_buffer(path, start_line, old_count, new_slice)
+		_server_script_revisions[path] = next_rev
+		for pid in network.peers:
+			if pid != 1:
+				rpc_id(pid, "apply_script_patch", path, start_line, old_count, new_slice, next_rev, checksum)
+	else:
+		rpc_id(1, "apply_script_patch", path, start_line, old_count, new_slice, next_rev, checksum)
 
 @rpc("any_peer", "reliable")
 func apply_script_patch(path: String, start_line: int, old_count: int, new_lines: PackedStringArray, revision: int, checksum: String = ""):
@@ -267,6 +285,7 @@ func apply_script_patch(path: String, start_line: int, old_count: int, new_lines
 	# 1. Server relay & buffer update
 	if network and network.is_server:
 		_apply_patch_to_server_buffer(path, start_line, old_count, new_lines)
+		_server_script_revisions[path] = revision
 		if sender_id != 0:
 			for pid in network.peers:
 				if pid != sender_id and pid != 1:
@@ -276,10 +295,18 @@ func apply_script_patch(path: String, start_line: int, old_count: int, new_lines
 	if network and (network.get("is_standalone_server") or DisplayServer.get_name() == "headless"):
 		return
 
+	# Deduplication & packet order guard: drop stale or duplicate packets immediately
+	var cur_rev = _script_revisions.get(path, 0)
+	if revision <= cur_rev:
+		return
+	if cur_rev > 0 and revision > cur_rev + 1:
+		_request_script_if_needed(path)
+		return
+
 	# 3. Apply to open editor if tracked
 	if not _tracked_editors.has(path):
 		# If script isn't open locally, just update stored lines so when opened it has them
-		_apply_patch_to_offline_lines(path, start_line, old_count, new_lines, checksum)
+		_apply_patch_to_offline_lines(path, start_line, old_count, new_lines, revision, checksum)
 		return
 
 	var code_edit = _tracked_editors[path]
@@ -341,20 +368,19 @@ func apply_script_patch(path: String, start_line: int, old_count: int, new_lines
 	if checksum != "":
 		var local_md5 = updated_text.md5_text()
 		if local_md5 != checksum:
-			if network:
-				network.tc_print("Script desync detected on " + path + ". Requesting authoritative server state...")
+			print_verbose("[TeamCreate] Script desync detected on " + path + ". Requesting authoritative server state...")
 			_request_script_if_needed(path)
 
 	# Redraw presence overlay
 	if _overlays.has(path) and is_instance_valid(_overlays[path]):
 		_overlays[path].queue_redraw()
 
-func _apply_patch_to_offline_lines(path: String, start_line: int, old_count: int, new_lines: PackedStringArray, checksum: String = ""):
+func _apply_patch_to_offline_lines(path: String, start_line: int, old_count: int, new_lines: PackedStringArray, revision: int, checksum: String = ""):
 	var lines = _synced_lines.get(path, PackedStringArray())
 	if lines.is_empty() and FileAccess.file_exists(path):
 		var f = FileAccess.open(path, FileAccess.READ)
 		if f:
-			lines = f.get_as_text().split("\n")
+			lines = f.get_as_text().replace("\r\n", "\n").split("\n")
 			f.close()
 
 	var prefix = lines.slice(0, start_line)
@@ -364,6 +390,7 @@ func _apply_patch_to_offline_lines(path: String, start_line: int, old_count: int
 	result.append_array(new_lines)
 	result.append_array(suffix)
 	_synced_lines[path] = result
+	_script_revisions[path] = revision
 	if checksum != "" and "\n".join(result).md5_text() != checksum:
 		_request_script_if_needed(path)
 
@@ -372,7 +399,7 @@ func _apply_patch_to_server_buffer(path: String, start_line: int, old_count: int
 	if lines.is_empty() and FileAccess.file_exists(path):
 		var f = FileAccess.open(path, FileAccess.READ)
 		if f:
-			lines = f.get_as_text().split("\n")
+			lines = f.get_as_text().replace("\r\n", "\n").split("\n")
 			f.close()
 
 	var prefix = lines.slice(0, start_line)
@@ -433,7 +460,7 @@ func _broadcast_local_caret():
 	_last_broadcast_caret = caret_state
 
 	var my_id = multiplayer.get_unique_id()
-	rpc("update_peer_script_caret", my_id, _active_script_path, line, col, has_sel, sel_from_line, sel_from_col, sel_to_line, sel_to_col)
+	_send_peer_caret(my_id, _active_script_path, line, col, has_sel, sel_from_line, sel_from_col, sel_to_line, sel_to_col)
 
 @rpc("any_peer", "unreliable")
 func update_peer_script_caret(peer_id: int, path: String, line: int, col: int, has_sel: bool, sel_from_line: int, sel_from_col: int, sel_to_line: int, sel_to_col: int):
@@ -519,18 +546,19 @@ func request_script_state(path: String):
 		if _server_script_buffers.has(path):
 			text = "\n".join(_server_script_buffers[path])
 		elif _tracked_editors.has(path) and is_instance_valid(_tracked_editors[path]):
-			text = _tracked_editors[path].get_text()
+			text = _tracked_editors[path].get_text().replace("\r\n", "\n")
 		elif FileAccess.file_exists(path):
 			var f = FileAccess.open(path, FileAccess.READ)
 			if f:
-				text = f.get_as_text()
+				text = f.get_as_text().replace("\r\n", "\n")
 				f.close()
 
-	var rev = _script_revisions.get(path, 0)
+	var rev = _server_script_revisions.get(path, _script_revisions.get(path, 0))
 	rpc_id(sender_id, "receive_script_state", path, text, rev)
 
 @rpc("any_peer", "reliable")
 func receive_script_state(path: String, full_text: String, revision: int):
+	full_text = full_text.replace("\r\n", "\n")
 	_script_revisions[path] = revision
 	_synced_lines[path] = full_text.split("\n")
 
@@ -567,6 +595,7 @@ func clear_all():
 	_peer_active_scripts.clear()
 	_synced_lines.clear()
 	_script_revisions.clear()
+	_server_script_revisions.clear()
 	_diff_timers.clear()
 	_dirty_scripts.clear()
 	_last_broadcast_caret.clear()

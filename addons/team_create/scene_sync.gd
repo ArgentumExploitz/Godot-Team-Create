@@ -932,7 +932,13 @@ func _track_selection():
 
 		_last_selected_ids = selected_ids
 		if network and network.is_connected_to_session():
-			rpc("update_peer_selection", multiplayer.get_unique_id(), selected_ids, _last_scene_path)
+			var my_uid = multiplayer.get_unique_id()
+			if network.is_server:
+				for pid in _get_connected_peers():
+					if pid != my_uid:
+						rpc_id(pid, "update_peer_selection", my_uid, selected_ids, _last_scene_path)
+			else:
+				rpc_id(1, "update_peer_selection", my_uid, selected_ids, _last_scene_path)
 
 @rpc("any_peer", "reliable")
 func update_peer_selection(peer_id: int, selected_ids: Array, scene_path: String = ""):
@@ -2332,14 +2338,24 @@ func _sync_cursor_throttled(delta):
 							_is_camera_dirty = true
 				if network and network.is_connected_to_session():
 					var my_uid = multiplayer.get_unique_id()
-					rpc("update_peer_cursor_3d", my_uid, _local_3d_cursor_pos, _last_scene_path)
+					if network.is_server:
+						for pid in _get_connected_peers():
+							if pid != my_uid:
+								rpc_id(pid, "update_peer_cursor_3d", my_uid, _local_3d_cursor_pos, _last_scene_path)
+					else:
+						rpc_id(1, "update_peer_cursor_3d", my_uid, _local_3d_cursor_pos, _last_scene_path)
 		elif typeof(data) == TYPE_DICTIONARY and data.get("has_2d", false):
 			var pos_2d = data.get("pos_2d", Vector2.ZERO)
 			if pos_2d != _local_2d_cursor_pos:
 				_local_2d_cursor_pos = pos_2d
 				if network and network.is_connected_to_session():
 					var my_uid = multiplayer.get_unique_id()
-					rpc("update_peer_cursor_2d", my_uid, _local_2d_cursor_pos, _last_scene_path)
+					if network.is_server:
+						for pid in _get_connected_peers():
+							if pid != my_uid:
+								rpc_id(pid, "update_peer_cursor_2d", my_uid, _local_2d_cursor_pos, _last_scene_path)
+					else:
+						rpc_id(1, "update_peer_cursor_2d", my_uid, _local_2d_cursor_pos, _last_scene_path)
 
 
 @rpc("any_peer", "unreliable")
