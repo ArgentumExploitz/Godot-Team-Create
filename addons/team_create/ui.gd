@@ -167,7 +167,7 @@ func _build_ui() -> void:
 
 	ip_edit = LineEdit.new()
 	ip_edit.text = "127.0.0.1"
-	ip_edit.placeholder_text = "Host IP Address (e.g., 127.0.0.1)"
+	ip_edit.placeholder_text = "Host IP Address (e.g., 127.0.0.1 or 127.0.0.1:25567)"
 	ip_edit.tooltip_text = "Enter the IP address of the host you want to join over LAN."
 	ip_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ip_edit.clear_button_enabled = true
@@ -180,7 +180,7 @@ func _build_ui() -> void:
 
 	host_btn = Button.new()
 	host_btn.text = "Host"
-	host_btn.tooltip_text = "Start a new LAN server on port 12345."
+	host_btn.tooltip_text = "Start a new LAN server on port 25567."
 	host_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	host_btn.pressed.connect(_on_host_pressed)

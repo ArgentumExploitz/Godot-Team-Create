@@ -32,7 +32,7 @@ Since this thing is barely holding together right now, any testing is a massive 
 ### LAN Connection
 **Host:**
 1. Open the Team Create dock.
-2. Click **Host**. This will start a server on your local machine (default port 12345).
+2. Click **Host**. This will start a server on your local machine (default port 25567).
 3. Give your local IP address to your friends on the same network.
 
 **User (Join):**

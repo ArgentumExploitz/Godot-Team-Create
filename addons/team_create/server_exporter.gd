@@ -135,7 +135,15 @@ if [ -f "$CFG_FILE" ]; then
     fi
     REMOTE_VER=$(echo "$REMOTE_CFG" | grep -i '^version=' | head -n1 | cut -d'=' -f2 | tr -d ' "\\r')
 
+    IS_NEWER=0
     if [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$LOCAL_VER" ]; then
+        HIGHEST=$(printf '%s\n%s\n' "$LOCAL_VER" "$REMOTE_VER" | sort -V 2>/dev/null | tail -n1)
+        if [ "$HIGHEST" = "$REMOTE_VER" ]; then
+            IS_NEWER=1
+        fi
+    fi
+
+    if [ "$IS_NEWER" -eq 1 ]; then
         echo ""
         echo "==================================================="
         echo " A new version of Godot Team Create is available!"
@@ -144,18 +152,14 @@ if [ -f "$CFG_FILE" ]; then
         echo "==================================================="
         echo ""
 
-        choice=""
-        while [ "$choice" != "y" ] && [ "$choice" != "yes" ] && [ "$choice" != "n" ] && [ "$choice" != "no" ]; do
-            if ! read -r -p "Do you want to update? (y/n): " choice; then
-                echo "n"
-                choice="n"
-                break
+        choice="n"
+        if [ -t 0 ]; then
+            if read -t 15 -r -p "Do you want to update? (y/n) [n]: " user_choice; then
+                choice=$(echo "$user_choice" | tr '[:upper:]' '[:lower:]' | tr -d ' \\r\\t')
             fi
-            choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]' | tr -d ' \\r\\t')
-            if [ "$choice" != "y" ] && [ "$choice" != "yes" ] && [ "$choice" != "n" ] && [ "$choice" != "no" ]; then
-                echo "Please type 'y' (yes) or 'n' (no)."
-            fi
-        done
+        else
+            echo "Non-interactive session detected. Skipping auto-update prompt."
+        fi
 
         if [ "$choice" = "y" ] || [ "$choice" = "yes" ]; then
             echo "Downloading update from GitHub..."
@@ -311,7 +315,24 @@ try {
     Write-Host "Could not check for updates (offline or GitHub unreachable)." -ForegroundColor Yellow
 }
 
+function Compare-SemVer($v1, $v2) {
+    try {
+        $a = [System.Version]($v1 -replace '[^0-9\\.]','')
+        $b = [System.Version]($v2 -replace '[^0-9\\.]','')
+        return $a.CompareTo($b)
+    } catch {
+        return 0
+    }
+}
+
+$isNewer = $false
 if ($remoteVer -and ($remoteVer -ne $localVer)) {
+    if ((Compare-SemVer $remoteVer $localVer) -gt 0) {
+        $isNewer = $true
+    }
+}
+
+if ($isNewer) {
     Write-Host ""
     Write-Host "===================================================" -ForegroundColor Cyan
     Write-Host " A new version of Godot Team Create is available!" -ForegroundColor Green

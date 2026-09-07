@@ -4,7 +4,8 @@ extends Node
 const ADJECTIVES = ["Fast", "Cool", "Smart", "Brave", "Wild", "Quick", "Sly", "Bold"]
 const NOUNS = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
 
-const PORT = 12345
+const PORT = 25567
+const HTTP_PORT = 25569
 const MAX_CLIENTS = 10
 
 var ui: Control
@@ -515,7 +516,7 @@ func _process_console_command(input: String):
 			if address.split(".").size() == 4 and not address.begins_with("127.") and not address.begins_with("169.254."):
 				local_ip = address
 				break
-		tc_print_rich("[color=white]Network:[/color] " + local_ip + ":" + str(port))
+		tc_print_rich("[color=white]Network:[/color] " + local_ip + ":" + str(PORT) + " (HTTP: " + str(HTTP_PORT) + ")")
 		var user_count = peers.size() - 1 if peers.has(1) else peers.size()
 		tc_print_rich("[color=white]Total users connected:[/color] " + str(user_count))
 		tc_print_rich("[color=cyan]-------------------[/color]")
@@ -805,14 +806,21 @@ func host_server():
 	_update_ui_state()
 
 func join_server(ip: String):
-	server_ip = ip
+	var target_ip = ip.strip_edges()
+	var target_port = PORT
+	if ":" in target_ip:
+		var parts = target_ip.split(":")
+		target_ip = parts[0]
+		if parts.size() > 1 and parts[1].is_valid_int():
+			target_port = parts[1].to_int()
+	server_ip = target_ip
 	if scene_sync:
 		var cur_scn = scene_sync._get_edited_scene_root()
 		if cur_scn and cur_scn.scene_file_path != "":
 			scene_sync.save_current_camera_for_scene(cur_scn.scene_file_path, true)
 			scene_sync._save_camera_cache()
 	disconnect_peer()
-	var err = peer.create_client(ip, PORT)
+	var err = peer.create_client(target_ip, target_port)
 	if err != OK:
 		tc_print("Failed to join server: Error code ", err)
 		disconnect_peer()
