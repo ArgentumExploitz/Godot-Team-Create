@@ -106,6 +106,67 @@ func _ready():
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
+var _heartbeat_accumulator: float = 0.0
+var server_ping: int = 0
+
+func _process(delta: float):
+	if is_connected_to_session():
+		_heartbeat_accumulator += delta
+		if _heartbeat_accumulator >= 4.0:
+			_heartbeat_accumulator = 0.0
+			_send_heartbeat()
+	else:
+		_heartbeat_accumulator = 0.0
+
+func _send_heartbeat():
+	if not is_connected_to_session():
+		return
+	if not is_server and multiplayer and multiplayer.get_unique_id() != 1:
+		rpc_id(1, "send_heartbeat_to_server", Time.get_ticks_msec())
+
+@rpc("any_peer", "unreliable")
+func send_heartbeat_to_server(client_time: int):
+	if not is_server:
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	if sender_id == 0 or sender_id == 1:
+		return
+	rpc_id(sender_id, "receive_heartbeat_from_server", client_time)
+
+@rpc("any_peer", "unreliable")
+func receive_heartbeat_from_server(client_time: int):
+	if is_server:
+		return
+	var rtt = Time.get_ticks_msec() - client_time
+	if rtt >= 0:
+		server_ping = rtt
+		if peers.has(1):
+			peers[1]["ping"] = rtt
+		_update_ui_state()
+		if is_connected_to_session() and multiplayer.get_unique_id() != 1:
+			rpc_id(1, "report_peer_ping", rtt)
+
+@rpc("any_peer", "unreliable")
+func report_peer_ping(ping_ms: int):
+	if not is_server:
+		return
+	var sender_id = multiplayer.get_remote_sender_id()
+	if sender_id != 0 and sender_id != 1 and peers.has(sender_id):
+		peers[sender_id]["ping"] = ping_ms
+
+func _configure_enet_peer(id: int):
+	var enet: ENetMultiplayerPeer = null
+	if peer is ENetMultiplayerPeer:
+		enet = peer
+	elif is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer is ENetMultiplayerPeer:
+		enet = multiplayer.multiplayer_peer
+
+	if enet:
+		var p = enet.get_peer(id)
+		if p:
+			# 32 retries, 10s minimum timeout, 90s maximum timeout, ping every 1s
+			p.set_timeout(32, 10000, 90000)
+			p.ping_interval(1000)
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -427,7 +488,10 @@ func _process_console_command(input: String):
 			var ip_str = "N/A"
 			if is_inside_tree() and multiplayer and multiplayer.has_multiplayer_peer() and multiplayer.multiplayer_peer is ENetMultiplayerPeer:
 				ip_str = multiplayer.multiplayer_peer.get_peer(id).get_remote_address()
-			tc_print_rich("[color=white]- " + info["username"] + " (ID: " + str(id) + ", IP: " + ip_str + ")[/color]")
+			var ping_str = ""
+			if info.has("ping") and info["ping"] > 0:
+				ping_str = ", Ping: " + str(info["ping"]) + "ms"
+			tc_print_rich("[color=white]- " + info["username"] + " (ID: " + str(id) + ", IP: " + ip_str + ping_str + ")[/color]")
 			count += 1
 		tc_print_rich("[color=green]Total users: " + str(count) + "[/color]")
 
@@ -803,6 +867,8 @@ func disconnect_peer():
 		file_sync._relay_timer_active = false
 		if file_sync.has_method("stop_http_server"):
 			file_sync.stop_http_server()
+	_heartbeat_accumulator = 0.0
+	server_ping = 0
 	if was_connected:
 		tc_print("Disconnected")
 
@@ -822,6 +888,7 @@ func _on_peer_connected(id: int):
 		return
 
 	tc_print("Peer connected: ", id)
+	_configure_enet_peer(id)
 	_add_peer(id)
 	if ui:
 		ui.update_users_count(peers.size())
@@ -877,6 +944,7 @@ func _on_peer_disconnected(id: int):
 
 func _on_connected_to_server():
 	tc_print("Connected to server successfully!")
+	_configure_enet_peer(1)
 	_add_peer(1) # Add server to peers list
 	_update_ui_state()
 
@@ -994,7 +1062,10 @@ func _update_ui_state():
 		var my_id = multiplayer.get_unique_id() if is_connected_to_session() else 1
 		var username = get_username(my_id)
 		var protocol = "Server" if connected_to_standalone else "LAN"
-		ui.status_label.text = "Status: " + username + " Connected (" + protocol + ")"
+		var ping_info = ""
+		if not is_server and server_ping > 0:
+			ping_info = " (" + str(server_ping) + "ms)"
+		ui.status_label.text = "Status: " + username + " Connected (" + protocol + ")" + ping_info
 		ui.update_users_count(peers.size())
 
 func push_current_scene():
