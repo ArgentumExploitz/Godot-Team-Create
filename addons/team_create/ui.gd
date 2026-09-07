@@ -396,11 +396,15 @@ func _on_host_pressed() -> void:
 
 func _on_join_pressed() -> void:
 	if network:
+		if network.has_method("stop_local_server"):
+			network.stop_local_server()
 		network.join_server(ip_edit.text)
 
 func _on_disconnect_pressed() -> void:
 	if network:
 		network.disconnect_peer()
+		if network.has_method("stop_local_server"):
+			network.stop_local_server()
 
 func _on_sync_settings_pressed() -> void:
 	if network:

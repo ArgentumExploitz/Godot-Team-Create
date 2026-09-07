@@ -814,11 +814,16 @@ func update_local_username(new_name: String):
 	elif my_id != 1:
 		rpc_id(1, "request_username_change", my_id, _local_username)
 
+var _lan_connect_retry_count: int = 0
+
 func _kill_local_server():
 	if _local_server_pid > 0:
 		OS.kill(_local_server_pid)
 		tc_print("Stopped local server process (PID: ", _local_server_pid, ")")
 		_local_server_pid = 0
+
+func stop_local_server():
+	_kill_local_server()
 
 func _ensure_server_files():
 	var exporter = load("res://addons/team_create/server_exporter.gd")
@@ -836,6 +841,7 @@ func _ensure_server_files():
 				f.close()
 
 func host_lan_server(raw_ip: String = ""):
+	_lan_connect_retry_count = 0
 	_kill_local_server()
 	disconnect_peer()
 
@@ -874,9 +880,14 @@ func host_lan_server(raw_ip: String = ""):
 	_local_server_pid = pid
 	tc_print_rich("[color=green]Started local server process (PID: " + str(pid) + ") on port " + str(target_port) + ".[/color]")
 
-	await get_tree().create_timer(1.2).timeout
+	var tree = get_tree() if is_inside_tree() else Engine.get_main_loop() as SceneTree
+	if tree:
+		await tree.create_timer(2.0).timeout
+	else:
+		OS.delay_msec(2000)
 
-	join_server("127.0.0.1:" + str(target_port))
+	if _local_server_pid > 0:
+		join_server("127.0.0.1:" + str(target_port))
 
 func host_server():
 	disconnect_peer()
@@ -1049,7 +1060,6 @@ func _report_closed_firewall_ports(closed_ports: Array, fw_tool: String) -> void
 	tc_print_rich("[color=yellow]==================================================[/color]")
 
 func disconnect_peer():
-	_kill_local_server()
 	var was_connected = false
 	if is_inside_tree() and multiplayer:
 		was_connected = multiplayer.has_multiplayer_peer()
@@ -1168,6 +1178,7 @@ func _on_peer_disconnected(id: int):
 			sync_node_unlock(nid, "")
 
 func _on_connected_to_server():
+	_lan_connect_retry_count = 0
 	tc_print("Connected to server successfully!")
 	_configure_enet_peer(1)
 	_add_peer(1) # Add server to peers list
@@ -1274,6 +1285,19 @@ func request_username_change(id: int, new_username: String):
 
 func _on_connection_failed():
 	tc_print("Connection to server failed.")
+	if _local_server_pid > 0 and _lan_connect_retry_count < 4:
+		_lan_connect_retry_count += 1
+		tc_print("Local server still initializing, retrying connection (attempt " + str(_lan_connect_retry_count) + "/4)...")
+		disconnect_peer()
+		var tree = get_tree() if is_inside_tree() else Engine.get_main_loop() as SceneTree
+		if tree:
+			await tree.create_timer(1.5).timeout
+		else:
+			OS.delay_msec(1500)
+		if _local_server_pid > 0:
+			join_server("127.0.0.1:" + str(PORT))
+		return
+	_lan_connect_retry_count = 0
 	disconnect_peer()
 
 func _on_server_disconnected():
