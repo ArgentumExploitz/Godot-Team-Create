@@ -180,7 +180,7 @@ func _build_ui() -> void:
 
 	host_btn = Button.new()
 	host_btn.text = "Host"
-	host_btn.tooltip_text = "Start a new LAN server on port 25567 (HTTP: 25568)."
+	host_btn.tooltip_text = "Start a new LAN server on port 25567."
 	host_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	host_btn.pressed.connect(_on_host_pressed)

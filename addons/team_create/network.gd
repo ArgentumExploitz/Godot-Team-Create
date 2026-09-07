@@ -6,7 +6,7 @@ const NOUNS = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
 
 const DEFAULT_PORT = 25567
 var PORT = DEFAULT_PORT
-var HTTP_PORT = DEFAULT_PORT + 1
+var HTTP_PORT = DEFAULT_PORT
 const MAX_CLIENTS = 10
 
 var ui: Control
@@ -235,7 +235,7 @@ func _process_console_command(input: String):
 			tc_print_rich("[color=white]/msg <message>[/color]    - Shows a message to everyone")
 			tc_print_rich("[color=white]/popup <message>[/color]  - Creates a pop up for everyone")
 			tc_print_rich("[color=white]/clearchat[/color]       - Clears all chat messages")
-			tc_print_rich("[color=white]/port <number>[/color]        - Changes server port (HTTP port will be port + 1)")
+			tc_print_rich("[color=white]/port <number>[/color]        - Changes server port (used for both UDP and TCP)")
 			tc_print_rich("[color=cyan]Type /help 2 for more commands[/color]")
 			tc_print_rich("[color=cyan]--------------------------[/color]")
 
@@ -518,20 +518,20 @@ func _process_console_command(input: String):
 			if address.split(".").size() == 4 and not address.begins_with("127.") and not address.begins_with("169.254."):
 				local_ip = address
 				break
-		tc_print_rich("[color=white]Network:[/color] " + local_ip + ":" + str(PORT) + " (HTTP: " + str(HTTP_PORT) + ")")
+		tc_print_rich("[color=white]Network:[/color] " + local_ip + ":" + str(PORT) + " (UDP Multiplayer & TCP HTTP)")
 		var user_count = peers.size() - 1 if peers.has(1) else peers.size()
 		tc_print_rich("[color=white]Total users connected:[/color] " + str(user_count))
 		tc_print_rich("[color=cyan]-------------------[/color]")
 
 	elif cmd == "/port" or cmd == "port":
 		if args.size() < 2 or not args[1].is_valid_int():
-			tc_print_rich("[color=orange]Usage: /port <number> (Current: " + str(PORT) + ", HTTP: " + str(HTTP_PORT) + ")[/color]")
+			tc_print_rich("[color=orange]Usage: /port <number> (Current: " + str(PORT) + ")[/color]")
 		else:
 			var new_port = args[1].to_int()
-			if new_port < 1 or new_port > 65534:
-				tc_print_rich("[color=red]Invalid port number: " + str(new_port) + ". Must be between 1 and 65534.[/color]")
+			if new_port < 1 or new_port > 65535:
+				tc_print_rich("[color=red]Invalid port number: " + str(new_port) + ". Must be between 1 and 65535.[/color]")
 			elif new_port == PORT:
-				tc_print_rich("[color=yellow]Server is already using port " + str(PORT) + " (HTTP: " + str(HTTP_PORT) + ").[/color]")
+				tc_print_rich("[color=yellow]Server is already using port " + str(PORT) + ".[/color]")
 				check_firewall_ports(PORT, HTTP_PORT)
 			else:
 				change_server_port(new_port)
@@ -835,7 +835,7 @@ func join_server(ip: String):
 				target_port = p
 	server_ip = target_ip
 	PORT = target_port
-	HTTP_PORT = target_port + 1
+	HTTP_PORT = target_port
 	if scene_sync:
 		var cur_scn = scene_sync._get_edited_scene_root()
 		if cur_scn and cur_scn.scene_file_path != "":
@@ -858,8 +858,8 @@ func join_server(ip: String):
 func change_server_port(new_port: int) -> void:
 	var old_port = PORT
 	PORT = new_port
-	HTTP_PORT = new_port + 1
-	tc_print_rich("[color=cyan]Changing server port to " + str(PORT) + " (HTTP: " + str(HTTP_PORT) + ")...[/color]")
+	HTTP_PORT = new_port
+	tc_print_rich("[color=cyan]Changing server port to " + str(PORT) + "...[/color]")
 
 	if is_server or is_standalone_server:
 		rpc("show_popup", "Server port changed to " + str(PORT) + ". Please reconnect.")
@@ -918,7 +918,10 @@ func _check_firewall_ports_worker(ports: Dictionary) -> void:
 	if closed_ports.size() > 0:
 		call_deferred("_report_closed_firewall_ports", closed_ports, fw_tool)
 	elif fw_tool != "":
-		call_deferred("tc_print_rich", "[color=green]Firewall check passed: Ports " + str(udp_port) + " (UDP) and " + str(tcp_port) + " (TCP) are open.[/color]")
+		if udp_port == tcp_port:
+			call_deferred("tc_print_rich", "[color=green]Firewall check passed: Port " + str(udp_port) + " (UDP & TCP) is open.[/color]")
+		else:
+			call_deferred("tc_print_rich", "[color=green]Firewall check passed: Ports " + str(udp_port) + " (UDP) and " + str(tcp_port) + " (TCP) are open.[/color]")
 
 func _is_port_allowed_in_ufw(p: int, proto: String, ufw_text: String) -> bool:
 	var port_str = str(p)
@@ -956,8 +959,11 @@ func _report_closed_firewall_ports(closed_ports: Array, fw_tool: String) -> void
 		tc_print_rich("[color=yellow]  - Port " + str(item.port) + " (" + item.proto + " / " + item.desc + ") is closed![/color]")
 	if fw_tool == "ufw":
 		var cmds = []
-		for item in closed_ports:
-			cmds.append("sudo ufw allow " + str(item.port) + "/" + item.proto.to_lower())
+		if closed_ports.size() == 2 and closed_ports[0].port == closed_ports[1].port:
+			cmds.append("sudo ufw allow " + str(closed_ports[0].port))
+		else:
+			for item in closed_ports:
+				cmds.append("sudo ufw allow " + str(item.port) + "/" + item.proto.to_lower())
 		tc_print_rich("[color=white]To open them on your server, run:[/color]")
 		tc_print_rich("[color=white]  " + " && ".join(cmds) + "[/color]")
 	elif fw_tool == "Windows Defender Firewall":

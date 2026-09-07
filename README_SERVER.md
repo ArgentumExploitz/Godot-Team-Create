@@ -20,8 +20,8 @@ You will see a `project/` folder along with `.bat` and `.sh` scripts. These scri
 *(Note: The wrapper scripts automatically look for a Godot executable in the same directory, or fallback to the system `godot` command in your PATH. If it fails to launch, you can manually place a copy of your Godot engine executable in the folder or update the script to point directly to it.)*
 
 ## Network Configuration
-By default, the standalone server hosts a standard Godot ENet server on port **25567** (RPC/UDP) and asset streaming on port **25568** (HTTP/TCP, always port + 1). You can also change the port at runtime in the server console with `/port <number>`.
+By default, the standalone server hosts both multiplayer synchronization (ENet / UDP) and asset streaming (HTTP / TCP) on the same port: **25567**. You can also change the port at runtime in the server console with `/port <number>`.
 
-If your team is connecting over the internet, you must ensure that **Port 25567 (UDP)** and **Port 25568 (TCP)** are open/forwarded on your firewall or router.
+If your team is connecting over the internet, you must ensure that **Port 25567 (both UDP and TCP)** is open/forwarded on your firewall or router.
 
 Once the server is running, players can join by entering your machine's IP address (e.g. `IP` or `IP:25567`) into the **LAN Connection** box in their Godot editor and clicking **Join**.
