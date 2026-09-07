@@ -34,8 +34,9 @@ class DropTarget extends MarginContainer:
 						chat_window._send_image(str(f))
 
 # Virtualization constants
-const MAX_RENDERED: int = 40
-const BATCH_SIZE: int = 20
+const MAX_RENDERED: int = 80
+const BATCH_SIZE: int = 25
+const PREFETCH_MARGIN: float = 200.0
 
 var message_vbox: VBoxContainer
 var scroll_container: ScrollContainer
@@ -299,19 +300,19 @@ func _on_scroll_changed(value: float):
 
 	var scrollbar = scroll_container.get_v_scroll_bar()
 	var at_bottom = value >= (scrollbar.max_value - scrollbar.page - 25.0)
-	if at_bottom:
+	if at_bottom and rendered_end_idx >= messages_data.size():
 		jump_to_bottom_btn.text = "V"
 		jump_to_bottom_btn.hide()
 	else:
 		jump_to_bottom_btn.show()
 
-	# Scroll to top: load older messages
-	if value <= 20.0 and rendered_start_idx > 0:
+	# Scroll near top: prefetch older messages
+	if value <= PREFETCH_MARGIN and rendered_start_idx > 0:
 		_load_older_messages()
 
-	# Scroll towards bottom: load newer messages if window is not at end
-	elif at_bottom and rendered_end_idx < messages_data.size():
-		_load_newer_messages()
+	# Scroll near bottom: prefetch newer messages
+	elif value >= (scrollbar.max_value - scrollbar.page - PREFETCH_MARGIN) and rendered_end_idx < messages_data.size():
+		_load_newer_messages(at_bottom)
 
 func _load_older_messages():
 	if rendered_start_idx <= 0 or _is_updating_scroll or not is_inside_tree():
@@ -343,11 +344,16 @@ func _load_older_messages():
 			scrollbar.value += diff
 	_is_updating_scroll = false
 
-func _load_newer_messages():
+func _load_newer_messages(follow_to_bottom: bool = false):
 	if rendered_end_idx >= messages_data.size() or _is_updating_scroll or not is_inside_tree():
 		return
 	_is_updating_scroll = true
-	var load_count = min(BATCH_SIZE, messages_data.size() - rendered_end_idx)
+
+	var remaining = messages_data.size() - rendered_end_idx
+	var load_count = min(BATCH_SIZE, remaining)
+	if follow_to_bottom or remaining <= BATCH_SIZE:
+		load_count = remaining
+
 	var new_end = rendered_end_idx + load_count
 
 	for i in range(rendered_end_idx, new_end):
@@ -356,13 +362,31 @@ func _load_newer_messages():
 	rendered_end_idx = new_end
 
 	# Prune from top if exceeded MAX_RENDERED
+	var scrollbar = scroll_container.get_v_scroll_bar()
+	var old_scroll = scrollbar.value if scrollbar else 0.0
+	var old_h = message_vbox.size.y
+	var pruned_any = false
+
 	while message_vbox.get_child_count() > MAX_RENDERED and rendered_start_idx < (rendered_end_idx - BATCH_SIZE):
 		var first = message_vbox.get_child(0)
 		message_vbox.remove_child(first)
 		first.queue_free()
 		rendered_start_idx += 1
+		pruned_any = true
 
 	await get_tree().process_frame
+	if is_instance_valid(scroll_container) and is_instance_valid(message_vbox):
+		scrollbar = scroll_container.get_v_scroll_bar()
+		if scrollbar:
+			if follow_to_bottom and rendered_end_idx >= messages_data.size():
+				scrollbar.value = scrollbar.max_value
+				jump_to_bottom_btn.text = "V"
+				jump_to_bottom_btn.hide()
+			elif pruned_any:
+				var height_removed = old_h - message_vbox.size.y
+				if height_removed > 0:
+					scrollbar.value = max(0.0, old_scroll - height_removed)
+
 	_is_updating_scroll = false
 
 func add_message(msg_data: Dictionary):
