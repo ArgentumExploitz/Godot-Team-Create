@@ -168,7 +168,7 @@ func _process(delta):
 func _setup_http_server():
 	if network and network.get("is_standalone_server"):
 		_http_server = TCPServer.new()
-		var port = network.HTTP_PORT if (network and "HTTP_PORT" in network) else (network.get("HTTP_PORT") if network and network.get("HTTP_PORT") != null else 25569)
+		var port = network.HTTP_PORT if (network and network.get("HTTP_PORT") != null) else (network.PORT + 1 if (network and network.get("PORT") != null) else 25568)
 		var err = _http_server.listen(port)
 		if err == OK:
 			network.tc_print("HTTP File Server listening on port " + str(port))
@@ -733,7 +733,7 @@ func _download_file_http(path: String):
 	var ip = network.server_ip
 	if ip == "":
 		ip = "127.0.0.1"
-	var port = network.HTTP_PORT if (network and "HTTP_PORT" in network) else (network.get("HTTP_PORT") if network and network.get("HTTP_PORT") != null else 25569)
+	var port = network.HTTP_PORT if (network and network.get("HTTP_PORT") != null) else (network.PORT + 1 if (network and network.get("PORT") != null) else 25568)
 
 	var raw_path = path.replace("res://", "/res/")
 	var path_parts = raw_path.split("/")
@@ -766,7 +766,7 @@ func _upload_file_http(path: String, bytes: PackedByteArray):
 	var ip = network.server_ip
 	if ip == "":
 		ip = "127.0.0.1"
-	var port = network.HTTP_PORT if (network and "HTTP_PORT" in network) else (network.get("HTTP_PORT") if network and network.get("HTTP_PORT") != null else 25569)
+	var port = network.HTTP_PORT if (network and network.get("HTTP_PORT") != null) else (network.PORT + 1 if (network and network.get("PORT") != null) else 25568)
 
 	var raw_path = path.replace("res://", "/res/")
 	var path_parts = raw_path.split("/")

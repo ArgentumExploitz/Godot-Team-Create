@@ -4,8 +4,9 @@ extends Node
 const ADJECTIVES = ["Fast", "Cool", "Smart", "Brave", "Wild", "Quick", "Sly", "Bold"]
 const NOUNS = ["Cat", "Dog", "Fox", "Bear", "Wolf", "Hawk", "Owl", "Lion"]
 
-const PORT = 25567
-const HTTP_PORT = 25569
+const DEFAULT_PORT = 25567
+var PORT = DEFAULT_PORT
+var HTTP_PORT = DEFAULT_PORT + 1
 const MAX_CLIENTS = 10
 
 var ui: Control
@@ -234,6 +235,7 @@ func _process_console_command(input: String):
 			tc_print_rich("[color=white]/msg <message>[/color]    - Shows a message to everyone")
 			tc_print_rich("[color=white]/popup <message>[/color]  - Creates a pop up for everyone")
 			tc_print_rich("[color=white]/clearchat[/color]       - Clears all chat messages")
+			tc_print_rich("[color=white]/port <number>[/color]        - Changes server port (HTTP port will be port + 1)")
 			tc_print_rich("[color=cyan]Type /help 2 for more commands[/color]")
 			tc_print_rich("[color=cyan]--------------------------[/color]")
 
@@ -521,6 +523,19 @@ func _process_console_command(input: String):
 		tc_print_rich("[color=white]Total users connected:[/color] " + str(user_count))
 		tc_print_rich("[color=cyan]-------------------[/color]")
 
+	elif cmd == "/port" or cmd == "port":
+		if args.size() < 2 or not args[1].is_valid_int():
+			tc_print_rich("[color=orange]Usage: /port <number> (Current: " + str(PORT) + ", HTTP: " + str(HTTP_PORT) + ")[/color]")
+		else:
+			var new_port = args[1].to_int()
+			if new_port < 1 or new_port > 65534:
+				tc_print_rich("[color=red]Invalid port number: " + str(new_port) + ". Must be between 1 and 65534.[/color]")
+			elif new_port == PORT:
+				tc_print_rich("[color=yellow]Server is already using port " + str(PORT) + " (HTTP: " + str(HTTP_PORT) + ").[/color]")
+				check_firewall_ports(PORT, HTTP_PORT)
+			else:
+				change_server_port(new_port)
+
 	elif cmd == "/backup" or cmd == "backup":
 		var target_path = args[1] if args.size() > 1 else ""
 		create_server_backup(target_path)
@@ -794,7 +809,8 @@ func host_server():
 		disconnect_peer()
 		return
 
-	multiplayer.multiplayer_peer = peer
+	if is_inside_tree() and multiplayer:
+		multiplayer.multiplayer_peer = peer
 	is_server = true
 	if file_sync:
 		file_sync._initial_sync_done = true
@@ -805,15 +821,21 @@ func host_server():
 	call_deferred("_update_local_chat_ui")
 	_update_ui_state()
 
+	check_firewall_ports(PORT, HTTP_PORT)
+
 func join_server(ip: String):
 	var target_ip = ip.strip_edges()
-	var target_port = PORT
+	var target_port = DEFAULT_PORT
 	if ":" in target_ip:
 		var parts = target_ip.split(":")
-		target_ip = parts[0]
-		if parts.size() > 1 and parts[1].is_valid_int():
-			target_port = parts[1].to_int()
+		target_ip = parts[0].strip_edges()
+		if parts.size() > 1 and parts[1].strip_edges().is_valid_int():
+			var p = parts[1].strip_edges().to_int()
+			if p > 0 and p <= 65535:
+				target_port = p
 	server_ip = target_ip
+	PORT = target_port
+	HTTP_PORT = target_port + 1
 	if scene_sync:
 		var cur_scn = scene_sync._get_edited_scene_root()
 		if cur_scn and cur_scn.scene_file_path != "":
@@ -825,12 +847,123 @@ func join_server(ip: String):
 		tc_print("Failed to join server: Error code ", err)
 		disconnect_peer()
 		return
-	multiplayer.multiplayer_peer = peer
+	if is_inside_tree() and multiplayer:
+		multiplayer.multiplayer_peer = peer
 	is_server = false
 	if is_connected_to_session():
 		_add_peer(multiplayer.get_unique_id())
 	if plugin:
 		plugin._force_close_all_scenes()
+
+func change_server_port(new_port: int) -> void:
+	var old_port = PORT
+	PORT = new_port
+	HTTP_PORT = new_port + 1
+	tc_print_rich("[color=cyan]Changing server port to " + str(PORT) + " (HTTP: " + str(HTTP_PORT) + ")...[/color]")
+
+	if is_server or is_standalone_server:
+		rpc("show_popup", "Server port changed to " + str(PORT) + ". Please reconnect.")
+		if scene_sync and scene_sync.has_method("flush_all_scenes_to_disk"):
+			scene_sync.flush_all_scenes_to_disk()
+		if file_sync and file_sync.has_method("stop_http_server"):
+			file_sync.stop_http_server()
+		disconnect_peer()
+		host_server()
+	else:
+		check_firewall_ports(PORT, HTTP_PORT)
+
+func check_firewall_ports(udp_port: int, tcp_port: int) -> void:
+	WorkerThreadPool.add_task(Callable(self, "_check_firewall_ports_worker").bind({"udp": udp_port, "tcp": tcp_port}))
+
+func _check_firewall_ports_worker(ports: Dictionary) -> void:
+	var udp_port: int = ports["udp"]
+	var tcp_port: int = ports["tcp"]
+	var os_name = OS.get_name()
+	var closed_ports: Array = []
+	var fw_tool = ""
+
+	if os_name == "Linux" or os_name == "FreeBSD":
+		var ufw_out = []
+		var ufw_code = OS.execute("ufw", ["status"], ufw_out, true)
+		if ufw_code == 0 and ufw_out.size() > 0 and "Status: active" in ufw_out[0]:
+			fw_tool = "ufw"
+			var text = ufw_out[0]
+			if not _is_port_allowed_in_ufw(udp_port, "udp", text):
+				closed_ports.append({"port": udp_port, "proto": "UDP", "desc": "Multiplayer Peer"})
+			if not _is_port_allowed_in_ufw(tcp_port, "tcp", text):
+				closed_ports.append({"port": tcp_port, "proto": "TCP", "desc": "HTTP File Sync"})
+		else:
+			var ipt_out = []
+			var ipt_code = OS.execute("iptables", ["-S", "INPUT"], ipt_out, true)
+			if ipt_code == 0 and ipt_out.size() > 0:
+				var ipt_text = ipt_out[0]
+				if "-P INPUT DROP" in ipt_text or "-P INPUT REJECT" in ipt_text:
+					fw_tool = "iptables"
+					if not (str(udp_port) in ipt_text):
+						closed_ports.append({"port": udp_port, "proto": "UDP", "desc": "Multiplayer Peer"})
+					if not (str(tcp_port) in ipt_text):
+						closed_ports.append({"port": tcp_port, "proto": "TCP", "desc": "HTTP File Sync"})
+	elif os_name == "Windows":
+		var ps_out = []
+		var ps_code = OS.execute("powershell", ["-NoProfile", "-Command", "(Get-NetFirewallProfile).Enabled"], ps_out, true)
+		if ps_code == 0 and ps_out.size() > 0 and "True" in ps_out[0]:
+			fw_tool = "Windows Defender Firewall"
+			for p_info in [{"port": udp_port, "proto": "UDP", "desc": "Multiplayer Peer"}, {"port": tcp_port, "proto": "TCP", "desc": "HTTP File Sync"}]:
+				var check_cmd = "$rules = Get-NetFirewallPortFilter | Where-Object { $_.LocalPort -eq '%d' }; if ($rules) { Write-Output 'OPEN' } else { Write-Output 'CLOSED' }" % p_info.port
+				var rule_out = []
+				var r_code = OS.execute("powershell", ["-NoProfile", "-Command", check_cmd], rule_out, true)
+				if r_code == 0 and rule_out.size() > 0 and not ("OPEN" in rule_out[0]):
+					closed_ports.append(p_info)
+
+	if closed_ports.size() > 0:
+		call_deferred("_report_closed_firewall_ports", closed_ports, fw_tool)
+	elif fw_tool != "":
+		call_deferred("tc_print_rich", "[color=green]Firewall check passed: Ports " + str(udp_port) + " (UDP) and " + str(tcp_port) + " (TCP) are open.[/color]")
+
+func _is_port_allowed_in_ufw(p: int, proto: String, ufw_text: String) -> bool:
+	var port_str = str(p)
+	for line in ufw_text.split("\n"):
+		var trimmed = line.strip_edges()
+		if not ("ALLOW" in trimmed or "ALLOW IN" in trimmed):
+			continue
+		var parts = trimmed.split(" ", false)
+		if parts.size() > 0:
+			var target = parts[0]
+			if target == port_str:
+				return true
+			if target == port_str + "/" + proto:
+				return true
+			if target.begins_with(port_str + ":") or target.begins_with(port_str + "/"):
+				if proto == "" or target == port_str + "/" + proto:
+					return true
+			if ":" in target:
+				var range_parts = target.split(":")
+				if range_parts.size() >= 2:
+					var start_p = range_parts[0].to_int()
+					var end_part = range_parts[1]
+					var end_p = end_part.split("/")[0].to_int()
+					var r_proto = end_part.split("/")[1] if "/" in end_part else ""
+					if p >= start_p and p <= end_p:
+						if r_proto == "" or r_proto == proto:
+							return true
+	return false
+
+func _report_closed_firewall_ports(closed_ports: Array, fw_tool: String) -> void:
+	tc_print_rich("[color=yellow]==================================================[/color]")
+	tc_print_rich("[color=yellow][WARNING] Firewall port check failed (" + fw_tool + ")![/color]")
+	tc_print_rich("[color=yellow]The following port(s) are NOT opened in the firewall:[/color]")
+	for item in closed_ports:
+		tc_print_rich("[color=yellow]  - Port " + str(item.port) + " (" + item.proto + " / " + item.desc + ") is closed![/color]")
+	if fw_tool == "ufw":
+		var cmds = []
+		for item in closed_ports:
+			cmds.append("sudo ufw allow " + str(item.port) + "/" + item.proto.to_lower())
+		tc_print_rich("[color=white]To open them on your server, run:[/color]")
+		tc_print_rich("[color=white]  " + " && ".join(cmds) + "[/color]")
+	elif fw_tool == "Windows Defender Firewall":
+		tc_print_rich("[color=white]Please add inbound Allow rules for these ports in Windows Defender Firewall.[/color]")
+	tc_print_rich("[color=yellow]Clients may not be able to connect or sync files until opened.[/color]")
+	tc_print_rich("[color=yellow]==================================================[/color]")
 
 func disconnect_peer():
 	var was_connected = false
