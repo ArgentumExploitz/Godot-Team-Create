@@ -8,25 +8,21 @@
 
 
 > [!WARNING]
-> This plugin is super early and highly unstable. It will probably crash and might even corrupt/wipe your scene files. Seriously, do not use this for your actual project yet!
+> This plugin is still in development! bugs can happen idk report them to me i guess.
+> and it's like really vibecoded so feel free to throw tomato at me, atleast i got it to work somewhat so thats nice 👍
 
-Basically, this is a Godot 4.* plugin that lets you and your friends jump into the same editor and build the game together in real-time. 
+This is a Godot 4.4+ plugin that lets you and your friends build the game together in real-time. 
 
 ## What you need
-- Godot 4.0 or newer.
+- Godot 4.4 or newer.
 - A decent internet connection between everyone.
-- OPTIONAL: Hosted server and LAN might not work for some!
+- OPTIONAL: Hosted server
 
 ## How to get it running
 1. Download the latest release.
-2. Chuck the files into your project's `addons/` folder.
+2. Drop files into your project's `addons/` folder.
 3. Open Godot, go to Project Settings -> Plugins.
-4. Check the box to turn it on and hope for the best.
-
-## Wanna help?
-Since this thing is barely holding together right now, any testing is a massive help.
-- **Breaking things:** If you find a bug (and you definitely will), open an issue up top and let me know exactly how you broke it so I can try to fix it.
-- **Fixing things:** If you actually want to write some code and help out, pull requests are awesome. Just open a discussion first so we can chat before you spend hours coding some massive new feature.
+4. Check the box to turn it on.
 
 ## How to connect
 ### LAN Connection
@@ -39,6 +35,11 @@ Since this thing is barely holding together right now, any testing is a massive 
 1. Open the Team Create dock.
 2. Enter the Host's local IP address in the text box.
 3. Click **Join**.
+
+## Wanna help?
+Any testing is already a huge help lolololo
+- **Breaking things:** If you find a bug, open an issue and let me know exactly how you broke it so I can try to fix it
+- **Fixing things:** If you want to write some code feel free to do pull requests. Just open a discussion first if you wanna make something big
 
 <a href="https://www.star-history.com/?repos=N3rmis%2FGodot-Team-Create&type=date&logscale=&legend=top-left">
  <picture>
