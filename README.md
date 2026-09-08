@@ -11,6 +11,13 @@
 > This plugin is still in development! bugs can happen idk report them to me i guess.
 > and it's like really vibecoded so feel free to throw tomato at me, atleast i got it to work somewhat so thats nice 👍
 
+> [!FOR v1.8]
+> I messed up position a little bit, you can find the dashboard on the **Top-Left Widget Corner!** you have to press this little **>** button to find it!
+> <img width="306" height="171" alt="image" src="https://github.com/user-attachments/assets/cbc399f2-0149-4efd-9ded-5521ff32c146" />
+> <img width="279" height="152" alt="image" src="https://github.com/user-attachments/assets/00ea7bae-d55a-480f-8d7c-5e8e98a99597" />
+
+
+
 This is a Godot 4.4+ plugin that lets you and your friends build the game together in real-time. 
 
 ## What you need
