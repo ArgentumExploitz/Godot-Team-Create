@@ -38,6 +38,8 @@ This is a Godot 4.4+ plugin that lets you and your friends build the game togeth
 2. Enter the Host's local IP address in the text box.
 3. Click **Join**.
 
+📖 Check out the **[Team Create Wiki](wiki/Home.md)** for detailed guides on connecting via **Hamachi / Radmin VPN**, dedicated servers, commands, and features!
+
 ## Wanna help?
 Any testing is already a huge help lolololo
 - **Breaking things:** If you find a bug, open an issue and let me know exactly how you broke it so I can try to fix it
