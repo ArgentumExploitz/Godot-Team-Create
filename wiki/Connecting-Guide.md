@@ -1,63 +1,49 @@
-# Connecting Guide 🌐
+# Connecting Guide
 
-Here are all the ways you and your buddies can connect to each other. Pick whichever is easiest for you!
+Here are the ways to connect to each other. Pick whatever is easiest for you.
 
----
+## 1. LAN (Same Wi-Fi)
 
-## 1. LAN Connection (Same Wi-Fi / House)
-
-If you're in the same room or on the same local network:
+If you're on the same local network:
 
 ### Host:
-1. Open the **Team Create** dock in Godot.
-2. Pick a username and color.
-3. Click **Host LAN**.
-4. Open your command prompt, type `ipconfig`, and find your IPv4 address (like `192.168.1.50`). Give this to your friend.
+1. Open the Team Create dock.
+2. Pick a username and click **Host LAN**.
+3. Open cmd, type `ipconfig`, and find your IPv4 address (like `192.168.1.something`). Give that to your friend.
 
 ### Joiner:
-1. Open the **Team Create** dock.
-2. Type the Host's local IP address in the box (e.g. `192.168.1.50`).
-3. Click **Join**. That's it!
+1. Open the Team Create dock.
+2. Type the host's local IP into the box.
+3. Click **Join**.
 
----
+## 2. Radmin VPN or Hamachi (Recommended if you don't wanna port forward)
 
-## 2. Hamachi or Radmin VPN (No Port Forwarding needed!)
+If you aren't on the same Wi-Fi and don't want to mess with your router settings, just use Radmin VPN or Hamachi. It's completely free and legal. It basically tricks your computers into thinking you're on LAN.
 
-Don't have access to your router settings or don't want to mess with port forwarding? Use a virtual LAN tool like **Radmin VPN** or **LogMeIn Hamachi**. They are 100% free and totally legal.
-
-### Setup (Takes 2 minutes):
-1. Both you and your friends download **Radmin VPN** (or Hamachi) and install it.
-2. **Host:** Click **Create Network**, give it a name and password, and tell your friends.
-3. **Friends:** Click **Join Network**, type the name and password.
-4. Now you're in the same virtual room!
-5. **Joiner:** Right-click the Host in Radmin/Hamachi and click **Copy IP address** (it usually looks like `26.x.x.x` or `25.x.x.x`).
-6. In Godot's Team Create dock, paste that IP and hit **Join**!
-
-> [!TIP]
-> This is usually the easiest way to play with friends over the internet without touching your router.
-
----
+1. Both of you download and install Radmin VPN (or Hamachi).
+2. Host makes a network with a name and password.
+3. Friend joins that network.
+4. Friend copies the host's IP from Radmin/Hamachi (it usually starts with `26.` or `25.`).
+5. Paste that IP into the Team Create dock and click **Join**.
 
 ## 3. Port Forwarding (Direct Internet)
 
-If you have access to your router and want a direct connection without third-party apps:
+If you know how to port forward:
 
-1. **Host:** Log into your router and forward **Port 25567** (both **UDP** and **TCP**) to your PC's local IP.
-2. Make sure Godot is allowed in your Windows Firewall.
-3. Find your public IP address (just google "what is my ip").
-4. Click **Host LAN** in the dock.
-5. **Friends:** Enter your public IP in the dock and hit **Join**.
+1. In your router settings, forward port **25567** (both **UDP** and **TCP**) to your PC's local IP.
+2. Make sure Windows Firewall isn't blocking Godot.
+3. Click **Host LAN** in the dock.
+4. Give your friend your public IP address (google "what is my ip").
+5. Friend puts your public IP in the dock and clicks **Join**.
 
----
+## 4. Headless Dedicated Server
 
-## 4. Headless Dedicated Server (24/7 Hosting)
+If you want a server running 24/7 without keeping the Godot editor open on your PC:
 
-Want a server running in the background without keeping the Godot editor open?
-
-1. Open Godot -> **Team Create** dock.
+1. Open the Team Create dock.
 2. Scroll to the bottom and click **Export Headless Server**.
-3. Choose a folder. It exports everything you need with launch scripts!
-4. Run:
-   - **Windows:** Double click `start_server.bat`
-   - **Linux:** Run `./start_server.sh`
-5. Connect to it like normal using the server's IP address!
+3. Pick an empty folder and save it.
+4. In that folder, run:
+   - **Windows:** `start_server.bat`
+   - **Linux:** `./start_server.sh`
+5. Connect to it by putting the server machine's IP into the dock and clicking **Join**.

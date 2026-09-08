@@ -1,27 +1,20 @@
-# Welcome to the Godot Team Create Wiki! 👋
+# Team Create Wiki
 
-Hey! If you're here, you probably want to build games in Godot with your friends without passing around zip files or doing 50 git merges an hour. 
+Basically this plugin lets you and your friends open the same Godot project and edit scenes, scripts, and nodes together in real-time. It's still in development and honestly pretty vibecoded, but it works.
 
-This plugin lets you and your team open the same Godot project and edit scenes, scripts, and nodes together in real-time. It's still in active development (and yeah, pretty vibecoded lol), but it works!
+## Quick Setup
 
----
+1. Download the latest release from the Releases tab.
+2. Drop `addons/team_create` into your project's `addons/` folder.
+3. Open Godot, go to Project Settings -> Plugins, and turn on Team Create.
+4. The dock should show up in the top-left tab bar and open automatically.
 
-## ⚡ Quick Start
+> [!WARNING]
+> Please backup your project before using this. It's early software and bugs will happen. Don't lose your work.
 
-1. Grab the latest release from the [Releases tab](https://github.com/N3rmis/Godot-Team-Create/releases).
-2. Unzip and drop the `addons/team_create` folder into your Godot project's `addons/` directory.
-3. Open Godot -> **Project Settings** -> **Plugins**.
-4. Toggle **Team Create** to **Enabled**.
-5. The **Team Create** dock will pop up right at the top left of your editor.
+## Pages
 
-> [!IMPORTANT]
-> **Always make a backup of your project before starting a session!** It's still early software. Bugs can happen, don't lose your precious work!
-
----
-
-## 📚 Wiki Pages
-
-- **[Connecting Guide](Connecting-Guide.md)** — How to connect via LAN, Hamachi / Radmin VPN, Port Forwarding, or a Headless Server.
-- **[Features & How They Work](Features-and-How-They-Work.md)** — Live scene editing, collaborative coding, cursors, chat, and pinned messages.
-- **[Commands List](Commands-List.md)** — All chat and server console commands.
-- **[FAQ & Troubleshooting](FAQ-and-Troubleshooting.md)** — Firewall fixes, desync tips, and common questions.
+- **[Connecting Guide](Connecting-Guide)** — How to connect (LAN, Hamachi/Radmin, port forwarding, or dedicated server).
+- **[Features](Features-and-How-They-Work)** — What actually syncs and how scenes, scripts, cursors, and chat work.
+- **[Commands List](Commands-List)** — Chat and server console commands.
+- **[FAQ and Troubleshooting](FAQ-and-Troubleshooting)** — Firewall stuff, common errors, and fixes.
