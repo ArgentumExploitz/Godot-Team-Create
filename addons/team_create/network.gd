@@ -240,7 +240,7 @@ func _server_console_thread_func():
 	tc_print_rich("[color=green]Server console ready. Type /help for a list of commands.[/color]")
 	while not _console_should_exit:
 		# OS.read_string_from_stdin is blocking. It will wake up when the user hits Enter.
-		var input = OS.read_string_from_stdin().strip_edges()
+		var input = OS.read_string_from_stdin(1024).strip_edges()
 		if input == "":
 			OS.delay_msec(50)
 			continue
