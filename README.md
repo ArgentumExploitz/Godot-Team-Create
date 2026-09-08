@@ -28,7 +28,7 @@ This is a Godot 4.4+ plugin that lets you and your friends build the game togeth
 ### LAN Connection
 **Host:**
 1. Open the Team Create dock.
-2. Click **Host**. This will start a server on your local machine (default port 25567).
+2. Click **Host LAN**. This will start a server on your local machine (default port 25567).
 3. Give your local IP address to your friends on the same network.
 
 **User (Join):**
