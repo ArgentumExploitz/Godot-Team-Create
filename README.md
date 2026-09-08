@@ -18,7 +18,7 @@ This is a Godot 4.4+ plugin that lets you and your friends build the game togeth
 ## What you need
 - Godot 4.4 or newer.
 - A decent internet connection between everyone.
-- OPTIONAL: Hosted server
+- OPTIONAL: Hosted server, it's just more stable for some reason
 
 ## How to get it running
 1. Download the latest release.
