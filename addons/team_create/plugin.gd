@@ -46,6 +46,8 @@ func _enter_tree() -> void:
 
 	network.tc_print("Team Create initialized.")
 
+	_schedule_dock_focus()
+
 	if has_signal("scene_saved"):
 		if not scene_saved.is_connected(_on_scene_saved):
 			scene_saved.connect(_on_scene_saved)
@@ -59,6 +61,41 @@ func _enter_tree() -> void:
 
 	# Check for updates on load
 	check_for_updates()
+
+func _schedule_dock_focus() -> void:
+	_open_and_prioritize_dock()
+	call_deferred("_open_and_prioritize_dock")
+	if is_inside_tree() and get_tree():
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_open_and_prioritize_dock()
+
+func _open_and_prioritize_dock() -> void:
+	if not is_instance_valid(dock):
+		return
+	var tab_container: TabContainer = null
+	var dock_tab_node: Node = dock
+
+	var current: Node = dock
+	while current:
+		var parent = current.get_parent()
+		if parent is TabContainer:
+			tab_container = parent
+			dock_tab_node = current
+			break
+		current = parent
+
+	if tab_container and is_instance_valid(dock_tab_node):
+		tab_container.move_child(dock_tab_node, 0)
+		tab_container.current_tab = 0
+		var tab_bar = tab_container.get_tab_bar()
+		if tab_bar:
+			tab_bar.current_tab = 0
+			tab_bar.ensure_tab_visible(0)
+		if dock_tab_node.has_method("make_visible"):
+			dock_tab_node.make_visible()
+		elif dock_tab_node.has_method("open"):
+			dock_tab_node.open()
 
 func _exit_tree() -> void:
 	_cleanup_disk_changed_interceptor()
