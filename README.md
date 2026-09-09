@@ -27,20 +27,20 @@ This is a Godot 4.4+ plugin that lets you and your friends build the game togeth
 4. Check the box to turn it on.
 
 ## How to connect
+
+<img height="300" align="right" alt="image" src="https://github.com/user-attachments/assets/030207af-eb47-44a2-9dac-c410aad6b3ed" />
+
 ### LAN Connection
 **Host:**
 1. Open the Team Create dock.
 2. Click **Host LAN**. This will start a server on your local machine (default port 25567).
 3. Give your local IP address to your friends on the same network.
 
-**User (Join):**
+**User:**
 1. Open the Team Create dock.
 2. Enter the Host's local IP address in the text box.
 3. Click **Join**.
 
-<p align="center">
-<img width="256" height="604" alt="image" src="https://github.com/user-attachments/assets/030207af-eb47-44a2-9dac-c410aad6b3ed" />
-</p>
 
 📖 Check out the **[Team Create Wiki](wiki/Home.md)** for detailed guides on connecting via **Hamachi / Radmin VPN**, dedicated servers, commands, and features!
 
