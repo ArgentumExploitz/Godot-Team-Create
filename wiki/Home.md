@@ -14,7 +14,7 @@ Basically this plugin lets you and your friends open the same Godot project and 
 
 ## Pages
 
-- **[Connecting Guide](Connecting-Guide)** — How to connect (LAN, Hamachi/Radmin, port forwarding, or dedicated server).
-- **[Features](Features-and-How-They-Work)** — What actually syncs and how scenes, scripts, cursors, and chat work.
-- **[Commands List](Commands-List)** — Chat and server console commands.
-- **[FAQ and Troubleshooting](FAQ-and-Troubleshooting)** — Firewall stuff, common errors, and fixes.
+- **[Connecting Guide](Connecting-Guide.md)** — How to connect (LAN, Hamachi/Radmin, port forwarding, or dedicated server).
+- **[Features](Features-and-How-They-Work.md)** — What actually syncs and how scenes, scripts, cursors, and chat work.
+- **[Commands List](Commands-List.md)** — Chat and server console commands.
+- **[FAQ and Troubleshooting](FAQ-and-Troubleshooting.md)** — Firewall stuff, common errors, and fixes.
